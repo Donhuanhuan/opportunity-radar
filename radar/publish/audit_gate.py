@@ -22,8 +22,9 @@ from typing import List, Optional
 from radar.config import (
     FEISHU_APP_ID, FEISHU_APP_SECRET,
     FEISHU_AUDIT_APP_TOKEN, FEISHU_AUDIT_TABLE_ID,
+    PUBLISH_ENABLED,
 )
-from radar.publish.local_publisher import PublishTask, publish
+from radar.publish.local_publisher import PublishTask, publish, check_local_service
 from radar.notify.feishu_bitable import BitableClient
 
 
@@ -103,11 +104,29 @@ class AuditGate:
         self.client.update_record(self.table_id, record_id, fields)
 
     def process_approved(self, dry_run: bool = False) -> dict:
-        """拉所有「通过」的草稿，发布，更新状态"""
+        """拉所有「通过」的草稿，发布，更新状态
+
+        安全闸：
+        1. 非 dry_run 时必须 PUBLISH_ENABLED=on 才真正发布
+        2. 本机发布服务不可用则整轮跳过（不把「通过」误标 FAILED，适合无人值守定时）
+        """
         approved = self.list_by_status(AuditDecision.APPROVED.value)
         print(f"→ 拉到 {len(approved)} 个待发布草稿")
+        results = {"published": 0, "failed": 0, "skipped": 0, "details": []}
 
-        results = {"published": 0, "failed": 0, "details": []}
+        if approved and not dry_run and PUBLISH_ENABLED != "on":
+            print(f"→ PUBLISH_ENABLED={PUBLISH_ENABLED}（非 on），跳过发布；"
+                  f"如需演练请加 --dry-run，如需真发请把 .env 置 PUBLISH_ENABLED=on")
+            results["skipped"] = len(approved)
+            results["details"].append({"reason": "publish-disabled"})
+            return results
+
+        if approved and not dry_run and not check_local_service():
+            print("→ 本机发布服务不可用，跳过本轮发布（审核状态保持不变）")
+            results["skipped"] = len(approved)
+            results["details"].append({"reason": "local-service-down"})
+            return results
+
         for item in approved:
             task = item.to_publish_task()
             log = publish(task, dry_run=dry_run)

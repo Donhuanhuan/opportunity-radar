@@ -2,6 +2,9 @@
 title Opportunity Radar - Local Publisher (port 19000)
 cd /d "%~dp0"
 
+rem ---- dedicated Edge profile (never touch your daily Edge user data) ----
+set "EDGE_USER_DATA=%~dp0edge-profile"
+
 rem ---- locate node (fallback to managed node) ----
 set "NODE_CMD=node"
 where node >nul 2>nul
@@ -16,6 +19,7 @@ set HEADLESS=false
 set PORT=19000
 
 echo Starting local publisher at http://localhost:19000
+echo This window MUST stay open for daily auto-publish.
 echo Keep this window OPEN. Press Ctrl+C to stop.
 echo.
 "%NODE_CMD%" index.js

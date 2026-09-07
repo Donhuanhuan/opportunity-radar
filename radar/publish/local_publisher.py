@@ -77,7 +77,8 @@ def call_local_service(task: PublishTask, dry_run: bool = False) -> Dict:
         "dryRun": dry_run,
     }
     try:
-        r = requests.post(f"{LOCAL_PUBLISHER_URL}/publish", json=payload, timeout=120)
+        # 200s：dry-run 含人工核对停留窗口时间，120s 会误超时
+        r = requests.post(f"{LOCAL_PUBLISHER_URL}/publish", json=payload, timeout=200)
         r.raise_for_status()
         return r.json()
     except requests.RequestException as e:

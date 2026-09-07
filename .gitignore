@@ -16,3 +16,10 @@ data/*.jsonl
 data/screenshots/
 data/agent_cost.jsonl
 data/publish_audit.jsonl
+# 发布服务专用 Edge profile（含登录态，严禁提交）
+local_publisher_service/edge-profile/
+local_publisher_service/edge-profile-cachebak/
+# 一次性诊断脚本
+local_publisher_service/diag_*.js
+local_publisher_service/diag_*.png
+local_publisher_service/probe*.js

@@ -7,6 +7,8 @@ const fs = require('fs');
 
 const PORT = process.env.PORT || 19000;
 const HEADLESS = process.env.HEADLESS === 'true' || process.env.HEADLESS === '1';
+// dry-run 命中发布按钮后保持窗口供人工核对的秒数（可被环境变量覆盖）
+const DRY_RUN_HOLD = parseInt(process.env.DRY_RUN_HOLD_SECONDS || '60', 10);
 
 // 默认 Edge 用户数据目录（Windows）
 const EDGE_USER_DATA = process.env.EDGE_USER_DATA || path.join(process.env.LOCALAPPDATA, 'Microsoft', 'Edge', 'User Data');
@@ -73,7 +75,10 @@ async function publishXiaohongshu(page, task) {
   if (!publishAction) throw new Error('未找到小红书发布按钮');
 
   if (task.dryRun) {
-    log('[DRY-RUN] 检测到发布按钮，未点击');
+    log('[DRY-RUN] 已填好表单，检测到发布按钮，未点击');
+    log(`[DRY-RUN] 窗口保持 ${DRY_RUN_HOLD}s 供人工核对，结束后自动关闭…`);
+    await page.waitForTimeout(DRY_RUN_HOLD * 1000);
+    log('[DRY-RUN] 核对窗口已关闭');
     return { platform: 'xiaohongshu', status: 'dry_run', title: task.title };
   }
 
@@ -97,48 +102,67 @@ async function publishZhihu(page, task) {
   // 知乎创作中心 - 写回答/写文章
   const writeBtn = await page.$('text=写文章') || await page.$('text=写回答') || await page.$('[data-za-detail-view-id="3523"]');
   if (!writeBtn) throw new Error('未找到知乎「写文章」入口，页面可能已改版');
+
+  // 关键：知乎点「写文章」会在新标签页打开 zhuanlan.zhihu.com/write
+  const popupPromise = page.waitForEvent('popup', { timeout: 12000 }).catch(() => null);
   await writeBtn.click();
-  await humanDelay(page, 2500);
+  const popup = await popupPromise;
+  if (popup) log('[zhihu] 检测到新标签页编辑器');
+
+  // 后续操作切换到新标签页；如果未弹新页则回退到当前页（兼容旧版 SPA）
+  let wp = popup || page;
+  if (wp !== page) await wp.waitForLoadState('domcontentloaded', { timeout: 20000 });
+  await humanDelay(wp, 2500);
 
   // 标题
-  const titleInput = await page.$('[placeholder*="请输入标题"]') || await page.$('input[aria-label*="标题"]');
+  const titleInput = await wp.$('[placeholder*="请输入标题"]') || await wp.$('input[aria-label*="标题"]');
   if (!titleInput) throw new Error('未找到知乎标题输入框');
   await titleInput.fill(task.title);
-  await humanDelay(page, 1500);
+  await humanDelay(wp, 1500);
 
   // 正文编辑器
-  const editor = await page.$('[contenteditable="true"]');
+  const editor = await wp.$('[contenteditable="true"]');
   if (!editor) throw new Error('未找到知乎正文编辑器');
   await editor.fill(task.body);
-  await humanDelay(page, 1500);
+  await humanDelay(wp, 1500);
 
   // 话题标签
   if (task.tags && task.tags.length > 0) {
-    const topicInput = await page.$('[placeholder*="搜索话题"]');
-    if (topicInput) {
+    const topicInput = await wp.$('[placeholder*="搜索话题"]');
+    if (topicInput && await topicInput.isVisible()) {
       for (const tag of task.tags.slice(0, 3)) {
-        await topicInput.fill(tag.replace(/^#/, ''));
-        await humanDelay(page, 1500);
-        const firstTopic = await page.$('.TopicItem');
-        if (firstTopic) await firstTopic.click();
-        await humanDelay(page, 1000);
+        try {
+          await topicInput.fill(tag.replace(/^#/, ''));
+          await humanDelay(wp, 1500);
+          const firstTopic = await wp.$('.TopicItem');
+          if (firstTopic) await firstTopic.click();
+          await humanDelay(wp, 1000);
+        } catch (e) {
+          log('[zhihu] 话题标签失败，跳过:', e.message);
+          break;
+        }
       }
+    } else {
+      log('[zhihu] 未检测到可见话题输入框，跳过话题');
     }
   }
 
   // 发布
-  const publishBtn = await page.$('text=发布文章') || await page.$('button:has-text("发布")');
+  const publishBtn = await wp.$('text=发布文章') || await wp.$('button:has-text("发布")') || await wp.$('text=发布');
   if (!publishBtn) throw new Error('未找到知乎发布按钮');
 
   if (task.dryRun) {
-    log('[DRY-RUN] 检测到发布按钮，未点击');
+    log('[DRY-RUN] 已填好标题/正文，检测到发布按钮，未点击');
+    log(`[DRY-RUN] 窗口保持 ${DRY_RUN_HOLD}s 供人工核对，结束后自动关闭…`);
+    await wp.waitForTimeout(DRY_RUN_HOLD * 1000);
+    log('[DRY-RUN] 核对窗口已关闭');
     return { platform: 'zhihu', status: 'dry_run', title: task.title };
   }
 
   await publishBtn.click();
-  await humanDelay(page, 5000);
+  await humanDelay(wp, 5000);
 
-  const success = await page.$('text=发布成功') || await page.$('text=审核中');
+  const success = await wp.$('text=发布成功') || await wp.$('text=审核中');
   return {
     platform: 'zhihu',
     status: success ? 'published' : 'unknown',
