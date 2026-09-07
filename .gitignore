@@ -11,3 +11,5 @@ build/
 .idea/
 .vscode/
 .pytest_cache/
+data/*.jsonl
+!data/.gitkeep

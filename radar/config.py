@@ -38,6 +38,14 @@ NOTIFY_CHANNELS = _env("NOTIFY_CHANNELS", "feishu").split(",")
 # ===== 飞书机器人 =====
 FEISHU_WEBHOOK = _env("FEISHU_WEBHOOK", "")
 
+# ===== 飞书多维表格（商机池）=====
+# 飞书自建应用凭证 → https://open.feishu.cn/app
+FEISHU_APP_ID = _env("FEISHU_APP_ID", "")
+FEISHU_APP_SECRET = _env("FEISHU_APP_SECRET", "")
+# 多维表格 URL 形如 https://xxx.feishu.cn/base/APP_TOKEN?table=TABLE_ID
+FEISHU_BITABLE_APP_TOKEN = _env("FEISHU_BITABLE_APP_TOKEN", "")
+FEISHU_BITABLE_TABLE_ID = _env("FEISHU_BITABLE_TABLE_ID", "")
+
 # ===== 邮件 =====
 EMAIL_HOST = _env("EMAIL_HOST", "smtp.qq.com")
 EMAIL_PORT = _env_int("EMAIL_PORT", 465)

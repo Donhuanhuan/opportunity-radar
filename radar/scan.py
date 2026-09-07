@@ -12,7 +12,7 @@ from datetime import datetime
 
 from radar.config import SOURCES, NOTIFY_CHANNELS, TOP_N
 from radar.sources import hackernews, github_trending, producthunt, kr36, weibo
-from radar.notify import feishu, email
+from radar.notify import feishu, email, feishu_bitable
 from radar.filters import filter_block, score_relevance, dedupe, top_n
 
 
@@ -26,6 +26,7 @@ SOURCE_MODULES = {
 
 NOTIFY_MODULES = {
     "feishu": feishu,
+    "feishu_bitable": feishu_bitable,
     "email": email,
 }
 
