@@ -20,7 +20,7 @@ import time
 
 from radar.config import (
     FEISHU_APP_ID, FEISHU_APP_SECRET,
-    FEISHU_BITABLE_APP_TOKEN,
+    FEISHU_AUDIT_APP_TOKEN,
 )
 
 
@@ -64,7 +64,7 @@ def init_table():
     client = BitableClient(
         app_id=FEISHU_APP_ID,
         app_secret=FEISHU_APP_SECRET,
-        app_token=FEISHU_BITABLE_APP_TOKEN,
+        app_token=FEISHU_AUDIT_APP_TOKEN,
     )
 
     # 1. 新建表
@@ -92,8 +92,8 @@ def main():
         import json
         print(json.dumps(SCHEMA, ensure_ascii=False, indent=2))
     elif args.action == "init":
-        if not (FEISHU_APP_ID and FEISHU_APP_SECRET and FEISHU_BITABLE_APP_TOKEN):
-            print("✗ 缺 FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_BITABLE_APP_TOKEN")
+        if not (FEISHU_APP_ID and FEISHU_APP_SECRET and FEISHU_AUDIT_APP_TOKEN):
+            print("✗ 缺 FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_AUDIT_APP_TOKEN")
             sys.exit(1)
         init_table()
 

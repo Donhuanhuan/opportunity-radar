@@ -34,8 +34,8 @@ from typing import List, Optional
 import yaml
 
 from radar.config import (
-    FEISHU_APP_ID, FEISHU_APP_SECRET, FEISHU_BITABLE_APP_TOKEN,
-    DRAFTS_BITABLE_TABLE_ID,
+    FEISHU_APP_ID, FEISHU_APP_SECRET,
+    FEISHU_AUDIT_APP_TOKEN, FEISHU_AUDIT_TABLE_ID,
 )
 from radar.publish.feishu_audit import SCHEMA as AUDIT_SCHEMA
 
@@ -270,7 +270,7 @@ def write_to_audit_table(pick: dict, formatted: dict, risk: dict) -> Optional[st
     client = BitableClient(
         app_id=FEISHU_APP_ID,
         app_secret=FEISHU_APP_SECRET,
-        app_token=FEISHU_BITABLE_APP_TOKEN,
+        app_token=FEISHU_AUDIT_APP_TOKEN,
     )
 
     fields = {
@@ -287,7 +287,7 @@ def write_to_audit_table(pick: dict, formatted: dict, risk: dict) -> Optional[st
     }
 
     try:
-        record = client.create_record(DRAFTS_BITABLE_TABLE_ID, fields)
+        record = client.create_record(FEISHU_AUDIT_TABLE_ID, fields)
         return record.get("record_id", "")
     except Exception as e:
         print(f"  ⚠ 写飞书失败：{e}")

@@ -6,7 +6,6 @@
 3. 本地落盘（JSONL） —— append_jsonl() 永远可用，作为草稿的最终兜底
 """
 import json
-import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +21,7 @@ except ImportError:
 from radar.config import (
     FEISHU_APP_ID, FEISHU_APP_SECRET,
     FEISHU_BITABLE_APP_TOKEN, FEISHU_BITABLE_TABLE_ID,
+    DRAFTS_BITABLE_APP_TOKEN, DRAFTS_BITABLE_TABLE_ID,
     HEADERS,
 )
 
@@ -139,6 +139,15 @@ class BitableClient:
                 if len(results) >= limit:
                     break
         return results
+
+    def create_record(self, table_id: str, fields: dict) -> dict:
+        """新建单条记录（返回含 record_id 的 record 对象）"""
+        url = f"{API_BASE}/bitable/v1/apps/{self.app_token}/tables/{table_id}/records"
+        body = {"fields": fields}
+        r = _http_post_json(url, self._headers(), body)
+        if r.get("code") != 0:
+            raise RuntimeError(f"创建记录失败: {r}")
+        return r["data"]["record"]
 
     def update_record(self, table_id: str, record_id: str, fields: dict) -> dict:
         """更新单条记录
@@ -371,8 +380,8 @@ def send_drafts(content: dict, app_token: str = None, table_id: str = None) -> b
     jsonl_path = append_jsonl(content)
 
     # 2. 多维表格写入（可选）
-    app_token = app_token or os.getenv("DRAFTS_BITABLE_APP_TOKEN", "")
-    table_id  = table_id  or os.getenv("DRAFTS_BITABLE_TABLE_ID", "")
+    app_token = app_token or DRAFTS_BITABLE_APP_TOKEN
+    table_id  = table_id  or DRAFTS_BITABLE_TABLE_ID
     if not app_token or not table_id:
         print(f"[FeishuBitable] 内容草稿表未配置 APP_TOKEN/TABLE_ID → 仅本地 JSONL 落盘到 {jsonl_path}")
         return True

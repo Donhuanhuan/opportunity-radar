@@ -26,7 +26,7 @@ from typing import Optional, List, Dict
 
 import requests
 
-from radar.config import FEISHU_APP_ID, FEISHU_APP_SECRET, FEISHU_BITABLE_APP_TOKEN, FEISHU_AUDIT_TABLE_ID
+from radar.config import FEISHU_APP_ID, FEISHU_APP_SECRET, FEISHU_AUDIT_APP_TOKEN, FEISHU_AUDIT_TABLE_ID
 from radar.notify.feishu_bitable import BitableClient
 from .humanizer import human_delay
 
@@ -84,13 +84,22 @@ def call_local_service(task: PublishTask, dry_run: bool = False) -> Dict:
         return {"ok": False, "error": str(e)}
 
 
+def _audit_client():
+    """构造指向内容审核表的 BitableClient（审核表独立于商机池）"""
+    return BitableClient(
+        app_id=FEISHU_APP_ID,
+        app_secret=FEISHU_APP_SECRET,
+        app_token=FEISHU_AUDIT_APP_TOKEN,
+    )
+
+
 def update_audit_status(record_id: str, status: str, note: str = "") -> bool:
     """更新飞书审核表状态"""
-    if not FEISHU_AUDIT_TABLE_ID:
-        print("  ⚠ FEISHU_AUDIT_TABLE_ID 未配置，跳过飞书回写")
+    if not (FEISHU_AUDIT_APP_TOKEN and FEISHU_AUDIT_TABLE_ID):
+        print("  ⚠ FEISHU_AUDIT_APP_TOKEN / FEISHU_AUDIT_TABLE_ID 未配置，跳过飞书回写")
         return False
     try:
-        client = BitableClient()
+        client = _audit_client()
         client.update_record(FEISHU_AUDIT_TABLE_ID, record_id, {
             "状态": status,
             "审核备注": note,
@@ -133,11 +142,11 @@ def publish(task: PublishTask, dry_run: bool = False) -> Dict:
 
 def pull_approved_tasks(limit: int = 3) -> List[PublishTask]:
     """从飞书审核表拉「通过」状态的记录"""
-    if not FEISHU_AUDIT_TABLE_ID:
-        print("✗ FEISHU_AUDIT_TABLE_ID 未配置")
+    if not (FEISHU_AUDIT_APP_TOKEN and FEISHU_AUDIT_TABLE_ID):
+        print("✗ FEISHU_AUDIT_APP_TOKEN / FEISHU_AUDIT_TABLE_ID 未配置")
         return []
 
-    client = BitableClient()
+    client = _audit_client()
     # 状态 = 通过
     records = client.search_records(FEISHU_AUDIT_TABLE_ID, {"状态": "通过"}, limit=limit)
     tasks = []

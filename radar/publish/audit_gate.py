@@ -21,7 +21,7 @@ from typing import List, Optional
 
 from radar.config import (
     FEISHU_APP_ID, FEISHU_APP_SECRET,
-    FEISHU_BITABLE_APP_TOKEN, FEISHU_AUDIT_TABLE_ID,
+    FEISHU_AUDIT_APP_TOKEN, FEISHU_AUDIT_TABLE_ID,
 )
 from radar.publish.local_publisher import PublishTask, publish
 from radar.notify.feishu_bitable import BitableClient
@@ -78,15 +78,15 @@ class AuditGate:
     """飞书审核表读写 + 发布调度"""
 
     def __init__(self):
-        if not (FEISHU_APP_ID and FEISHU_APP_SECRET and FEISHU_BITABLE_APP_TOKEN and FEISHU_AUDIT_TABLE_ID):
+        if not (FEISHU_APP_ID and FEISHU_APP_SECRET and FEISHU_AUDIT_APP_TOKEN and FEISHU_AUDIT_TABLE_ID):
             raise ValueError(
                 "未配置飞书审核表。请设置环境变量：FEISHU_APP_ID / FEISHU_APP_SECRET / "
-                "FEISHU_BITABLE_APP_TOKEN / FEISHU_AUDIT_TABLE_ID"
+                "FEISHU_AUDIT_APP_TOKEN / FEISHU_AUDIT_TABLE_ID"
             )
         self.client = BitableClient(
             app_id=FEISHU_APP_ID,
             app_secret=FEISHU_APP_SECRET,
-            app_token=FEISHU_BITABLE_APP_TOKEN,
+            app_token=FEISHU_AUDIT_APP_TOKEN,
         )
         self.table_id = FEISHU_AUDIT_TABLE_ID
 

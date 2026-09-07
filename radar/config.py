@@ -47,13 +47,17 @@ FEISHU_BITABLE_APP_TOKEN = _env("FEISHU_BITABLE_APP_TOKEN", "")
 FEISHU_BITABLE_TABLE_ID = _env("FEISHU_BITABLE_TABLE_ID", "")
 
 # ===== 飞书多维表格 · 内容草稿表（M2 输出）=====
-# 沿用同一 app_token，新建第二张表「内容草稿」
-# 字段：草稿ID/商机标题/商机链接/平台/标题/正文/标签/状态/审核备注/生成时间（10字段）
+# 独立的多维表格（非商机池所在表），URL 形如 https://xxx.feishu.cn/wiki/XXX?table=TABLE_ID
+# 字段：商机标题/商机链接/xhs标题/xhs正文/xhs标签/xhs配图/xhs发布要点/
+#       zh标题1_理性/zh标题2_悬念/zh标题3_实用/zh正文/zh关键点/zh配图/zh发布要点/
+#       状态(select: 待发/已发小红书/已发知乎/双发/跳过)/生成时间
+DRAFTS_BITABLE_APP_TOKEN = _env("DRAFTS_BITABLE_APP_TOKEN", "")
 DRAFTS_BITABLE_TABLE_ID = _env("DRAFTS_BITABLE_TABLE_ID", "")
 
 # ===== 飞书多维表格 · 内容审核表（M3 发布闸）=====
-# 在同一 app_token 下新建第三张表「内容审核」
-# 字段同 DRAFTS，但状态枚举有"待审/通过/拒绝/已发/失败"
+# 也是独立的多维表格（非商机池所在表）
+# 字段：草稿ID/商机标题/商机链接/平台/标题/正文/标签/状态(待审/通过/拒绝/已发/失败)/审核备注/生成时间
+FEISHU_AUDIT_APP_TOKEN = _env("FEISHU_AUDIT_APP_TOKEN", "")
 FEISHU_AUDIT_TABLE_ID = _env("FEISHU_AUDIT_TABLE_ID", "")
 
 # ===== M3 本地发布（路径B：agent-browser 半本机）=====
