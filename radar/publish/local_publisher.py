@@ -1,218 +1,196 @@
-"""本地发布器 —— 路径B（agent-browser 半本机）
+"""本地发布器 —— 路径 B（本机 Playwright 服务）
 
 执行链路：
-1. 飞书审核表 → 用户点"通过" → webhook 触发本脚本
-2. preflight_check() 验证 cookie 还在（否则通知用户重新登录）
-3. 按平台分别调用 publish_xiaohongshu() / publish_zhihu()
-4. 写 audit 日志 + 飞书通知结果
+1. 飞书审核表 → 用户点"通过" → webhook/轮询触发本脚本
+2. 按平台封装任务，调用本机服务 http://localhost:19000/publish
+3. 本机服务复用用户 Edge 登录态，在本地浏览器里完成发布
+4. 写 audit 日志 + 更新飞书审核表状态
+
+环境变量：
+  LOCAL_PUBLISHER_URL=http://localhost:19000  默认
+  PUBLISH_DRY_RUN=1                           只演练不点发布
 
 CLI：
   python -m radar.publish.local_publisher --dry-run
   python -m radar.publish.local_publisher --platform xiaohongshu --draft-id xxx
+  python -m radar.publish.local_publisher --from-jsonl data/drafts.jsonl
 """
 import argparse
 import json
-import subprocess
+import os
 import sys
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional, List, Dict
 
-from .humanizer import human_delay, micro_pause, long_pause, action, typing_delay
+import requests
+
+from radar.config import FEISHU_APP_ID, FEISHU_APP_SECRET, FEISHU_BITABLE_APP_TOKEN, FEISHU_AUDIT_TABLE_ID
+from radar.notify.feishu_bitable import BitableClient
+from .humanizer import human_delay
 
 
-# ===== 数据结构 =====
+LOCAL_PUBLISHER_URL = os.environ.get("LOCAL_PUBLISHER_URL", "http://localhost:19000").rstrip("/")
+
+
 @dataclass
 class PublishTask:
     draft_id: str
     platform: str  # "xiaohongshu" | "zhihu"
     title: str
     body: str
-    images: List[str]       # 本地图片绝对路径
-    hashtags: List[str]
-    extra: Optional[Dict] = None  # 平台特有：xhs@谁 / zh专栏等
+    images: List[str] = None       # 本地图片绝对路径
+    hashtags: List[str] = None
+    extra: Optional[Dict] = None  # 平台特有
+
+    def __post_init__(self):
+        if self.images is None:
+            self.images = []
+        if self.hashtags is None:
+            self.hashtags = []
 
 
-# ===== agent-browser CLI 调用 =====
-def ab(*args: str, timeout: int = 120) -> str:
-    """调用 agent-browser CLI，返回 stdout"""
-    cmd = ["agent-browser", *args]
+def check_local_service(timeout: int = 5) -> bool:
+    """检查本机发布服务是否存活"""
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout,
-            encoding="utf-8", errors="replace"
-        )
-        if result.returncode != 0:
-            print(f"  ✗ agent-browser {args[0]} 失败：{result.stderr[:200]}")
-        return result.stdout
-    except FileNotFoundError:
-        print("  ✗ agent-browser 未安装。请先 `npm install -g agent-browser && agent-browser install`")
-        return ""
-    except subprocess.TimeoutExpired:
-        print(f"  ✗ agent-browser {args[0]} 超时（{timeout}s）")
-        return ""
-
-
-# ===== 平台入口 =====
-def preflight_check(platform: str) -> bool:
-    """预检：打开创作中心首页，确认 cookie 有效（页面里有用户名）
-    Returns: True=已登录可发；False=需重新登录"""
-    urls = {
-        "xiaohongshu": "https://creator.xiaohongshu.com/publish",
-        "zhihu": "https://www.zhihu.com/creator",
-    }
-    url = urls.get(platform)
-    if not url:
-        print(f"  ✗ 未知平台：{platform}")
+        r = requests.get(f"{LOCAL_PUBLISHER_URL}/health", timeout=timeout)
+        data = r.json()
+        ok = data.get("ok") and data.get("edge") and data.get("userData")
+        if not ok:
+            print(f"  ⚠ 本机服务健康检查异常：{data}")
+        return ok
+    except Exception as e:
+        print(f"  ✗ 本机服务未启动或无法连接：{e}")
+        print(f"  → 请先运行：D:\\WorkBuddy\\Make monney\\本地发布服务\\start.cmd")
         return False
 
-    print(f"  ▶ 预检 {platform}（打开 {url}）")
-    ab("open", url)
-    ab("wait", "--load", "networkidle")
-    human_delay(2.0, 4.0, "等页面渲染")
-    snapshot = ab("snapshot", "-i")
 
-    # 简单启发式：登录态包含「创作者中心」/「发布」按钮，且不包含「登录/注册」CTA
-    not_logged_keywords = ["登录", "注册", "login", "sign in"]
-    logged_keywords = ["发布", "创作中心", "publish", "creator", "我的"]
-
-    is_logged = any(k in snapshot.lower() for k in logged_keywords) and \
-                not any(k in snapshot.lower() for k in not_logged_keywords)
-
-    if not is_logged:
-        print(f"  ⚠ {platform} cookie 已失效，需要重新手动登录")
-        print("  → 在 agent-browser 打开的页面里手动登录，我会接管后续操作")
-        # 给用户足够时间登录
-        human_delay(30.0, 60.0, "等用户登录")
-        # 再 snap 一次确认
-        snapshot2 = ab("snapshot", "-i")
-        is_logged = any(k in snapshot2.lower() for k in logged_keywords)
-
-    return is_logged
+def call_local_service(task: PublishTask, dry_run: bool = False) -> Dict:
+    """调本机 webhook 完成发布"""
+    payload = {
+        "platform": task.platform,
+        "title": task.title,
+        "body": task.body,
+        "tags": task.hashtags,
+        "coverImage": task.images[0] if task.images else None,
+        "dryRun": dry_run,
+    }
+    try:
+        r = requests.post(f"{LOCAL_PUBLISHER_URL}/publish", json=payload, timeout=120)
+        r.raise_for_status()
+        return r.json()
+    except requests.RequestException as e:
+        return {"ok": False, "error": str(e)}
 
 
-def publish_xiaohongshu(task: PublishTask, dry_run: bool = False) -> Dict:
-    """发布到小红书创作者中心"""
+def update_audit_status(record_id: str, status: str, note: str = "") -> bool:
+    """更新飞书审核表状态"""
+    if not FEISHU_AUDIT_TABLE_ID:
+        print("  ⚠ FEISHU_AUDIT_TABLE_ID 未配置，跳过飞书回写")
+        return False
+    try:
+        client = BitableClient()
+        client.update_record(FEISHU_AUDIT_TABLE_ID, record_id, {
+            "状态": status,
+            "审核备注": note,
+        })
+        return True
+    except Exception as e:
+        print(f"  ✗ 更新飞书审核表失败：{e}")
+        return False
+
+
+def publish(task: PublishTask, dry_run: bool = False) -> Dict:
+    """发布一条任务，返回日志"""
     log = {
         "draft_id": task.draft_id,
-        "platform": "xiaohongshu",
+        "platform": task.platform,
         "title": task.title,
         "start_ts": time.time(),
         "dry_run": dry_run,
         "steps": [],
     }
 
-    if dry_run:
-        print(f"  [DRY-RUN] 小红书任务：{task.title[:30]}...")
-        print(f"  正文长度：{len(task.body)} 字")
-        print(f"  图片：{len(task.images)} 张")
-        print(f"  标签：{task.hashtags[:5]}...")
-        log["steps"].append({"name": "dry-run", "ok": True})
+    if not check_local_service():
+        log["steps"].append({"name": "health-check", "ok": False})
         return log
 
-    if not preflight_check("xiaohongshu"):
-        log["steps"].append({"name": "preflight", "ok": False, "reason": "cookie失效"})
-        return log
-
-    with action("打开图文发布"):
-        ab("open", "https://creator.xiaohongshu.com/publish")
-        ab("wait", "--load", "networkidle")
-    log["steps"].append({"name": "open-editor", "ok": True})
-
-    # 实际发布流程（每个步骤由 humanizer 自动加延迟）
-    # 这里给出骨架；具体 selector 在首次实测时通过 `agent-browser snapshot -i` 校准
-    print("  → 上传图片（需 selector 校准）")
-    for img in task.images:
-        print(f"    - {Path(img).name}")
-        # ab("click", "#upload-image-input")
-        # ab("type", "#upload-image-input", str(img))  # 文件路径
-        human_delay(2.0, 5.0)
-
-    print("  → 填标题（需 selector 校准）")
-    print(f"    {task.title[:50]}")
-    # ab("type", "#title-input", task.title)
-    time.sleep(typing_delay(task.title))
-
-    print("  → 填正文（需 selector 校准）")
-    print(f"    {task.body[:50]}...")
-    # ab("type", "#content-editor", task.body)
-    time.sleep(typing_delay(task.body))
-
-    print("  → 加标签（需 selector 校准）")
-    for tag in task.hashtags[:5]:
-        print(f"    #{tag}")
-        # ab("type", "#tag-input", f"#{tag}")
-        human_delay(1.0, 2.0)
-
-    # 截图留证（不发布，给用户最后确认）
-    ab("screenshot", "--out", f"data/screenshots/xhs_{task.draft_id}_pending.png")
-
+    print(f"  ▶ 发布 {task.platform}: {task.title[:40]}...")
+    result = call_local_service(task, dry_run=dry_run)
+    log["result"] = result
     log["end_ts"] = time.time()
-    log["steps"].append({"name": "fill-form", "ok": True})
-    log["note"] = "骨架已跑通，需 selector 校准后才能正式发布"
+
+    if result.get("ok"):
+        log["steps"].append({"name": "publish", "ok": True, "status": result.get("result", {}).get("status")})
+        print(f"  ✅ {task.platform} 处理完成：{result}")
+    else:
+        log["steps"].append({"name": "publish", "ok": False, "error": result.get("error")})
+        print(f"  ✗ {task.platform} 失败：{result.get('error')}")
+
     return log
 
 
-def publish_zhihu(task: PublishTask, dry_run: bool = False) -> Dict:
-    """发布到知乎创作者中心"""
-    log = {
-        "draft_id": task.draft_id,
-        "platform": "zhihu",
-        "title": task.title,
-        "start_ts": time.time(),
-        "dry_run": dry_run,
-        "steps": [],
-    }
+def pull_approved_tasks(limit: int = 3) -> List[PublishTask]:
+    """从飞书审核表拉「通过」状态的记录"""
+    if not FEISHU_AUDIT_TABLE_ID:
+        print("✗ FEISHU_AUDIT_TABLE_ID 未配置")
+        return []
 
-    if dry_run:
-        print(f"  [DRY-RUN] 知乎任务：{task.title[:30]}...")
-        print(f"  正文长度：{len(task.body)} 字")
-        log["steps"].append({"name": "dry-run", "ok": True})
-        return log
+    client = BitableClient()
+    # 状态 = 通过
+    records = client.search_records(FEISHU_AUDIT_TABLE_ID, {"状态": "通过"}, limit=limit)
+    tasks = []
+    for rec in records:
+        fields = rec.get("fields", {})
+        platform = fields.get("平台", "")
+        if isinstance(platform, dict):  # 单选字段可能是 dict
+            platform = platform.get("text", "")
+        platform = platform.lower()
+        if platform in ("小红书", "xiaohongshu"):
+            platform = "xiaohongshu"
+        elif platform in ("知乎", "zhihu"):
+            platform = "zhihu"
+        else:
+            continue
 
-    if not preflight_check("zhihu"):
-        log["steps"].append({"name": "preflight", "ok": False, "reason": "cookie失效"})
-        return log
+        title = fields.get("标题", "")
+        body = fields.get("正文", "")
+        tags = fields.get("标签", [])
+        if isinstance(tags, str):
+            tags = [t.strip() for t in tags.replace("#", "").split(",") if t.strip()]
 
-    with action("打开知乎创作中心"):
-        ab("open", "https://www.zhihu.com/creator")
-        ab("wait", "--load", "networkidle")
-    log["steps"].append({"name": "open-editor", "ok": True})
-
-    # 类似 xhs 的骨架
-    print("  → 填标题")
-    print(f"    {task.title[:50]}")
-    time.sleep(typing_delay(task.title))
-    print("  → 填正文")
-    print(f"    {task.body[:50]}...")
-    time.sleep(typing_delay(task.body))
-
-    ab("screenshot", "--out", f"data/screenshots/zh_{task.draft_id}_pending.png")
-    log["end_ts"] = time.time()
-    log["steps"].append({"name": "fill-form", "ok": True})
-    log["note"] = "骨架已跑通，需 selector 校准后才能正式发布"
-    return log
+        tasks.append(PublishTask(
+            draft_id=rec.get("record_id"),
+            platform=platform,
+            title=title,
+            body=body,
+            hashtags=tags,
+        ))
+    return tasks
 
 
-# ===== CLI =====
 def main():
-    parser = argparse.ArgumentParser(description="本地发布器（路径B）")
-    parser.add_argument("--dry-run", action="store_true", help="不真发，只打印任务")
+    parser = argparse.ArgumentParser(description="本地发布器（路径 B：本机 Playwright 服务）")
+    parser.add_argument("--dry-run", action="store_true", help="不真发，只演练")
     parser.add_argument("--platform", choices=["xiaohongshu", "zhihu"], help="单平台发布")
-    parser.add_argument("--draft-id", help="从飞书审核表读取的草稿 ID")
+    parser.add_argument("--draft-id", help="从飞书审核表读取的草稿 record_id")
     parser.add_argument("--from-jsonl", help="从 data/drafts.jsonl 读取任务")
-    parser.add_argument("--preflight", action="store_true", help="只跑预检，不发布")
+    parser.add_argument("--pull-audit", action="store_true", help="拉审核表中「通过」的任务并发")
     args = parser.parse_args()
 
+    dry_run = args.dry_run or os.environ.get("PUBLISH_DRY_RUN") == "1"
     tasks: List[PublishTask] = []
 
-    if args.draft_id:
-        # TODO: 从飞书审核表读
+    if args.pull_audit:
+        print("→ 从飞书审核表拉「通过」任务...")
+        tasks = pull_approved_tasks(limit=int(os.environ.get("PUBLISH_DAILY_LIMIT", "3")))
+        print(f"  拉到 {len(tasks)} 条待发布任务")
+    elif args.draft_id:
+        # TODO: 从飞书审核表读单条
         print(f"[TODO] 从飞书审核表读 draft_id={args.draft_id}")
         return
-
-    if args.from_jsonl:
+    elif args.from_jsonl:
         path = Path(args.from_jsonl)
         if not path.exists():
             print(f"✗ {path} 不存在")
@@ -228,25 +206,20 @@ def main():
             draft_id="demo-001",
             platform=args.platform or "xiaohongshu",
             title="示例：用 AI 帮你批量整理商机（7 天实测）",
-            body="这是示例正文，测试发布链路是否打通..." * 5,
+            body="这是示例正文，测试发布链路是否打通。" * 5,
             images=[],
             hashtags=["AI", "商机", "副业", "工具", "效率"],
         )]
 
-    if args.preflight:
-        for t in tasks:
-            preflight_check(t.platform)
+    if not tasks:
+        print("没有待发布任务，退出")
         return
 
     results = []
     for t in tasks:
-        if t.platform == "xiaohongshu":
-            r = publish_xiaohongshu(t, dry_run=args.dry_run)
-        elif t.platform == "zhihu":
-            r = publish_zhihu(t, dry_run=args.dry_run)
-        else:
-            continue
+        r = publish(t, dry_run=dry_run)
         results.append(r)
+        human_delay(2.0, 5.0, "任务间隔")
 
     # 写 audit 日志
     audit_path = Path("data/publish_audit.jsonl")

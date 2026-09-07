@@ -1,0 +1,205 @@
+// 本地内容发布服务
+// 复用本机 Edge 的 userDataDir，保留登录态，避免任何 cookie 导出/注入操作
+const { chromium } = require('playwright');
+const express = require('express');
+const path = require('path');
+const fs = require('fs');
+
+const PORT = process.env.PORT || 19000;
+const HEADLESS = process.env.HEADLESS === 'true' || process.env.HEADLESS === '1';
+
+// 默认 Edge 用户数据目录（Windows）
+const EDGE_USER_DATA = process.env.EDGE_USER_DATA || path.join(process.env.LOCALAPPDATA, 'Microsoft', 'Edge', 'User Data');
+// Edge 可执行文件
+const EDGE_EXE = process.env.EDGE_EXE || path.join(process.env['PROGRAMFILES(X86)'] || process.env.PROGRAMFILES, 'Microsoft', 'Edge', 'Application', 'msedge.exe');
+
+const app = express();
+app.use(express.json({ limit: '2mb' }));
+
+function log(...args) {
+  console.log(`[${new Date().toISOString()}]`, ...args);
+}
+
+function randomBetween(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+async function humanDelay(page, ms) {
+  const t = ms || randomBetween(800, 2200);
+  await page.waitForTimeout(t);
+}
+
+async function publishXiaohongshu(page, task) {
+  log('发布小红书:', task.title);
+  await page.goto('https://creator.xiaohongshu.com/new', { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await humanDelay(page, 3000);
+
+  // 1. 点击发布图文按钮（新版创作者平台）
+  const publishBtn = await page.$('text=发布图文') || await page.$('text=图文') || await page.$('text=上传图文');
+  if (!publishBtn) throw new Error('未找到小红书「发布图文」入口，页面可能已改版');
+  await publishBtn.click();
+  await humanDelay(page, 2000);
+
+  // 2. 上传封面（如提供图片路径）
+  if (task.coverImage && fs.existsSync(task.coverImage)) {
+    const uploadInput = await page.$('input[type="file"]');
+    if (uploadInput) {
+      await uploadInput.setInputFiles(task.coverImage);
+      await humanDelay(page, 3000);
+    }
+  }
+
+  // 3. 填写标题
+  const titleInput = await page.$('[placeholder*="标题"], input[type="text"]') || await page.$('[placeholder*="填写标题"]');
+  if (!titleInput) throw new Error('未找到小红书标题输入框');
+  await titleInput.fill(task.title);
+  await humanDelay(page, 1500);
+
+  // 4. 填写正文
+  const editor = await page.$('[contenteditable="true"]');
+  if (!editor) throw new Error('未找到小红书正文编辑器');
+  await editor.fill(task.body);
+  await humanDelay(page, 1500);
+
+  // 5. 添加话题标签（用 # 方式或点击话题按钮）
+  if (task.tags && task.tags.length > 0) {
+    const tagText = task.tags.map(t => (t.startsWith('#') ? t : '#' + t)).join(' ');
+    await editor.fill(task.body + '\n' + tagText);
+    await humanDelay(page, 2000);
+  }
+
+  // 6. 发布按钮（先 dry-run 用文本检测）
+  const publishAction = await page.$('text=发布笔记') || await page.$('text=立即发布');
+  if (!publishAction) throw new Error('未找到小红书发布按钮');
+
+  if (task.dryRun) {
+    log('[DRY-RUN] 检测到发布按钮，未点击');
+    return { platform: 'xiaohongshu', status: 'dry_run', title: task.title };
+  }
+
+  await publishAction.click();
+  await humanDelay(page, 5000);
+
+  // 7. 校验成功
+  const success = await page.$('text=发布成功') || await page.$('text=审核中');
+  return {
+    platform: 'xiaohongshu',
+    status: success ? 'published' : 'unknown',
+    title: task.title
+  };
+}
+
+async function publishZhihu(page, task) {
+  log('发布知乎:', task.title);
+  await page.goto('https://www.zhihu.com/creator', { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await humanDelay(page, 3000);
+
+  // 知乎创作中心 - 写回答/写文章
+  const writeBtn = await page.$('text=写文章') || await page.$('text=写回答') || await page.$('[data-za-detail-view-id="3523"]');
+  if (!writeBtn) throw new Error('未找到知乎「写文章」入口，页面可能已改版');
+  await writeBtn.click();
+  await humanDelay(page, 2500);
+
+  // 标题
+  const titleInput = await page.$('[placeholder*="请输入标题"]') || await page.$('input[aria-label*="标题"]');
+  if (!titleInput) throw new Error('未找到知乎标题输入框');
+  await titleInput.fill(task.title);
+  await humanDelay(page, 1500);
+
+  // 正文编辑器
+  const editor = await page.$('[contenteditable="true"]');
+  if (!editor) throw new Error('未找到知乎正文编辑器');
+  await editor.fill(task.body);
+  await humanDelay(page, 1500);
+
+  // 话题标签
+  if (task.tags && task.tags.length > 0) {
+    const topicInput = await page.$('[placeholder*="搜索话题"]');
+    if (topicInput) {
+      for (const tag of task.tags.slice(0, 3)) {
+        await topicInput.fill(tag.replace(/^#/, ''));
+        await humanDelay(page, 1500);
+        const firstTopic = await page.$('.TopicItem');
+        if (firstTopic) await firstTopic.click();
+        await humanDelay(page, 1000);
+      }
+    }
+  }
+
+  // 发布
+  const publishBtn = await page.$('text=发布文章') || await page.$('button:has-text("发布")');
+  if (!publishBtn) throw new Error('未找到知乎发布按钮');
+
+  if (task.dryRun) {
+    log('[DRY-RUN] 检测到发布按钮，未点击');
+    return { platform: 'zhihu', status: 'dry_run', title: task.title };
+  }
+
+  await publishBtn.click();
+  await humanDelay(page, 5000);
+
+  const success = await page.$('text=发布成功') || await page.$('text=审核中');
+  return {
+    platform: 'zhihu',
+    status: success ? 'published' : 'unknown',
+    title: task.title
+  };
+}
+
+async function runTask(task) {
+  const browser = await chromium.launchPersistentContext(EDGE_USER_DATA, {
+    executablePath: EDGE_EXE,
+    headless: HEADLESS,
+    viewport: { width: 1280, height: 800 },
+    args: ['--no-sandbox', '--disable-blink-features=AutomationControlled']
+  });
+
+  const page = await browser.newPage();
+  // 隐藏 webdriver 标志
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+  });
+
+  let result;
+  try {
+    if (task.platform === 'xiaohongshu') {
+      result = await publishXiaohongshu(page, task);
+    } else if (task.platform === 'zhihu') {
+      result = await publishZhihu(page, task);
+    } else {
+      throw new Error(`未知平台: ${task.platform}`);
+    }
+  } finally {
+    await browser.close();
+  }
+  return result;
+}
+
+app.get('/health', (req, res) => {
+  res.json({ ok: true, edge: fs.existsSync(EDGE_EXE), userData: fs.existsSync(EDGE_USER_DATA) });
+});
+
+app.post('/publish', async (req, res) => {
+  const task = req.body;
+  log('收到任务:', JSON.stringify(task));
+
+  if (!task.platform || !task.title || !task.body) {
+    return res.status(400).json({ ok: false, error: '缺少 platform/title/body' });
+  }
+
+  try {
+    const result = await runTask(task);
+    log('任务结果:', result);
+    res.json({ ok: true, result });
+  } catch (err) {
+    log('任务失败:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.listen(PORT, () => {
+  log(`本地发布服务已启动: http://localhost:${PORT}`);
+  log(`Edge 路径: ${EDGE_EXE}`);
+  log(`Edge 用户数据: ${EDGE_USER_DATA}`);
+  log(`模式: ${HEADLESS ? 'headless' : '有窗口（推荐首次用有窗口看登录态）'}`);
+});

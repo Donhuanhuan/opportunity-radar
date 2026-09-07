@@ -32,6 +32,153 @@ DRAFTS_JSONL = DATA_DIR / "drafts.jsonl"
 # === Token 模块级缓存 ===
 _TOKEN_CACHE = {"token": None, "expire_at": 0}
 
+
+# ============ BitableClient：实例化客户端（用于建表等高级操作）============
+
+class BitableClient:
+    """飞书多维表格客户端 + API 封装
+
+    用法：
+        client = BitableClient(app_id, app_secret, app_token)
+        client.create_table("内容审核", schema_dict)  # 返回 {"table_id": "..."}
+    """
+    def __init__(self, app_id: str = None, app_secret: str = None, app_token: str = None):
+        self.app_id = app_id or FEISHU_APP_ID
+        self.app_secret = app_secret or FEISHU_APP_SECRET
+        self.app_token = app_token or FEISHU_BITABLE_APP_TOKEN
+        if not (self.app_id and self.app_secret and self.app_token):
+            raise RuntimeError("BitableClient: app_id / app_secret / app_token 不能为空")
+
+    def _headers(self) -> dict:
+        return {**HEADERS, "Authorization": f"Bearer {_get_tenant_token()}"}
+
+    def create_table(self, table_name: str, schema: dict, default_name_field: str = None) -> dict:
+        """在 app_token 下新建一张表
+
+        schema: {字段名: {type: 1|3|4|5|15, property: {...}}, ...}
+            1 = text, 3 = single-select, 4 = multi-select, 5 = date, 15 = url
+        返回 {"table_id": "..."}
+        """
+        # 1. 先建表（只带 table.name + 默认 "文本" 主字段）
+        body = {
+            "table": {
+                "name": table_name,
+                "default_column_name": default_name_field or (list(schema.keys())[0] if schema else "标题"),
+            }
+        }
+        r = _http_post_json(
+            f"{API_BASE}/bitable/v1/apps/{self.app_token}/tables",
+            self._headers(), body,
+        )
+        if r.get("code") != 0:
+            raise RuntimeError(f"建表失败: {r}")
+        table_id = r["data"]["table_id"]
+
+        # 2. 逐字段添加（飞书要求循环单字段对象，不能传 fields:[]）
+        for field_name, spec in schema.items():
+            field_body = {
+                "field_name": field_name,
+                "type": spec.get("type", 1),
+            }
+            prop = spec.get("property") or {}
+            if prop:
+                field_body["property"] = prop
+            r2 = _http_post_json(
+                f"{API_BASE}/bitable/v1/apps/{self.app_token}/tables/{table_id}/fields",
+                self._headers(), field_body,
+            )
+            if r2.get("code") != 0:
+                print(f"⚠️ 字段 {field_name} 创建失败: {r2}")
+                continue
+
+        return {"table_id": table_id, "name": table_name}
+
+    def list_records(self, table_id: str, page_size: int = 500) -> list:
+        """列出表中所有记录"""
+        url = f"{API_BASE}/bitable/v1/apps/{self.app_token}/tables/{table_id}/records"
+        records = []
+        page_token = None
+        while True:
+            params = {"page_size": min(page_size, 500)}
+            if page_token:
+                params["page_token"] = page_token
+            r = _http_get_json(url, self._headers(), params=params)
+            if r.get("code") != 0:
+                raise RuntimeError(f"拉记录失败: {r}")
+            items = r["data"].get("items", [])
+            records.extend(items)
+            if not r["data"].get("has_more"):
+                break
+            page_token = r["data"].get("page_token")
+        return records
+
+    def search_records(self, table_id: str, filters: dict = None, limit: int = 500) -> list:
+        """按字段值过滤记录（简单内存过滤；复杂场景建议改用飞书 filter API）
+
+        filters: {"状态": "通过"}
+        """
+        all_records = self.list_records(table_id)
+        if not filters:
+            return all_records[:limit]
+        results = []
+        for rec in all_records:
+            fields = rec.get("fields", {})
+            match = True
+            for k, v in filters.items():
+                fv = fields.get(k)
+                # 单选字段可能是 dict {"text":"..."} 或 list
+                if isinstance(fv, dict):
+                    fv = fv.get("text", "")
+                elif isinstance(fv, list) and fv and isinstance(fv[0], dict):
+                    fv = ",".join(x.get("text", "") for x in fv)
+                if str(fv) != str(v):
+                    match = False
+                    break
+            if match:
+                results.append(rec)
+                if len(results) >= limit:
+                    break
+        return results
+
+    def update_record(self, table_id: str, record_id: str, fields: dict) -> dict:
+        """更新单条记录
+
+        fields: {"状态": "已发", "审核备注": "成功"}
+        """
+        url = f"{API_BASE}/bitable/v1/apps/{self.app_token}/tables/{table_id}/records/{record_id}"
+        body = {"fields": fields}
+        return _http_put_json(url, self._headers(), body)
+
+
+# === 内容草稿表 schema（17 字段）===
+DRAFTS_TABLE_SCHEMA = {
+    "商机标题":     {"type": 1, "property": {}},                              # text（主字段）
+    "商机链接":     {"type": 15, "property": {}},                             # url
+    "xhs标题":      {"type": 1, "property": {}},
+    "xhs正文":      {"type": 1, "property": {}},
+    "xhs标签":      {"type": 4, "property": {}},                              # multi-select
+    "xhs配图":      {"type": 1, "property": {}},
+    "xhs发布要点":  {"type": 1, "property": {}},
+    "zh标题1_理性": {"type": 1, "property": {}},
+    "zh标题2_悬念": {"type": 1, "property": {}},
+    "zh标题3_实用": {"type": 1, "property": {}},
+    "zh正文":       {"type": 1, "property": {}},
+    "zh关键点":     {"type": 1, "property": {}},
+    "zh配图":       {"type": 1, "property": {}},
+    "zh发布要点":   {"type": 1, "property": {}},
+    "状态":         {"type": 3, "property": {                                 # single-select
+        "options": [
+            {"name": "待发", "color": 0},
+            {"name": "已发小红书", "color": 5},
+            {"name": "已发知乎", "color": 5},
+            {"name": "双发", "color": 2},
+            {"name": "跳过", "color": 7},
+        ]
+    }},
+    "生成时间":     {"type": 5, "property": {"date_formatter": "yyyy-MM-dd HH:mm"}},
+}
+
+
 # === source 归一化映射 ===
 _SOURCE_MAP = {
     "hackernews": "hackernews", "hn": "hackernews",
@@ -59,11 +206,25 @@ def _http_post_json(url: str, headers: dict, body: dict, timeout: int = 10) -> d
         return json.load(r)
 
 
-def _http_get_json(url: str, headers: dict, timeout: int = 10) -> dict:
+def _http_get_json(url: str, headers: dict, params: dict = None, timeout: int = 10) -> dict:
     if _HAS_REQUESTS:
-        r = requests.get(url, headers=headers, timeout=timeout)
+        r = requests.get(url, headers=headers, params=params, timeout=timeout)
         return r.json()
-    req = urllib.request.Request(url, headers=headers, method="GET")
+    full_url = url
+    if params:
+        from urllib.parse import urlencode
+        full_url = f"{url}?{urlencode(params)}"
+    req = urllib.request.Request(full_url, headers=headers, method="GET")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.load(r)
+
+
+def _http_put_json(url: str, headers: dict, body: dict, timeout: int = 10) -> dict:
+    if _HAS_REQUESTS:
+        r = requests.put(url, headers=headers, json=body, timeout=timeout)
+        return r.json()
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers={**headers, "Content-Type": "application/json"}, method="PUT")
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.load(r)
 

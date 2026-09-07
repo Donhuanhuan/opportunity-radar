@@ -1,0 +1,17 @@
+{
+  "name": "local-content-publisher",
+  "version": "1.0.0",
+  "description": "本机内容发布服务：接收 webhook 任务，用用户已登录的 Edge 发布小红书/知乎",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "install": "node install.js"
+  },
+  "dependencies": {
+    "playwright": "^1.47.0",
+    "express": "^4.21.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
