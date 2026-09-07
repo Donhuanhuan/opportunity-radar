@@ -15,8 +15,7 @@ def fetch(limit: int = 25) -> list:
             r'<article class="Box-row">(.*?)</article>',
             re.DOTALL
         )
-        for m in pattern.finditer(r.text)[:limit]:
-            block = m.group(1)
+        for block in pattern.findall(r.text)[:limit]:
             # 提取 h2 链接
             href_m = re.search(r'<h2[^>]*>\s*<a[^>]*href="(/[^"]+)"', block)
             if not href_m:

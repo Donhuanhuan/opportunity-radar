@@ -69,6 +69,7 @@ def run(sources: list, dry_run: bool = False) -> list:
 
 
 def main():
+    global TOP_N
     parser = argparse.ArgumentParser(description="商机雷达 - 自动发现互联网商机")
     parser.add_argument("--source", help="只跑指定源（逗号分隔）")
     parser.add_argument("--dry-run", action="store_true", help="只抓取不推送")
@@ -77,7 +78,6 @@ def main():
 
     sources = args.source.split(",") if args.source else SOURCES
     if args.top:
-        global TOP_N
         TOP_N = args.top
 
     items = run(sources, dry_run=args.dry_run)
