@@ -1,4 +1,4 @@
-"""3 Agent 协作编排器
+"""4 Agent 协作编排器
 
 执行流：
   M1 抓商机 → 写商机池
@@ -9,7 +9,9 @@
       ↓
   risk_monitor（合规扫描）                    ─── ¥0.005
       ↓
-  写飞书「内容审核表」状态="待审"
+  quality_reviewer（质检闸：规则硬校验 + LLM 五维打分）── ¥0.005
+      ↓  不达标 → 带 QC 意见重写一次 → 仍不达标 → 写表标「拒绝」拦截
+  写飞书「内容审核表」状态="待审"（备注含 QC 分数）
       ↓
   欢欢审核 → 改"通过"
       ↓
@@ -37,6 +39,7 @@ import yaml
 from radar.config import (
     FEISHU_APP_ID, FEISHU_APP_SECRET,
     FEISHU_AUDIT_APP_TOKEN, FEISHU_AUDIT_TABLE_ID,
+    QC_ENABLED, QC_MIN_SCORE,
 )
 from radar.publish.feishu_audit import SCHEMA as AUDIT_SCHEMA
 
@@ -220,8 +223,11 @@ def run_strategist(opportunities: List[dict], dry_run: bool = False) -> dict:
     return parsed
 
 
-def run_formatter(pick: dict, raw_draft: dict, dry_run: bool = False) -> dict:
-    """排版师：3 标题 + 润色"""
+def run_formatter(pick: dict, raw_draft: dict, dry_run: bool = False, rewrite_feedback: str = "") -> dict:
+    """排版师：3 标题 + 润色
+
+    rewrite_feedback 非空时 = QC 驳回后的重写：在 prompt 尾部追加修改意见
+    """
     agent = load_agent("formatter")
     prompt = render_template(
         agent["llm_prompt_template"],
@@ -229,6 +235,12 @@ def run_formatter(pick: dict, raw_draft: dict, dry_run: bool = False) -> dict:
         sentiment=pick.get("sentiment", ""),
         raw_draft=json.dumps(raw_draft, ensure_ascii=False),
     )
+    if rewrite_feedback:
+        prompt += (
+            f"\n\n【重要：上一版被质检驳回，这是重写机会】\n"
+            f"驳回原因：{rewrite_feedback}\n"
+            f"请针对以上问题重写，输出同样的 JSON 格式。不要重复上一版的问题。"
+        )
     response = llm_call(prompt, system=agent["description"], json_mode=True)
     parsed = _parse_llm_json(response)
     if parsed is None:
@@ -288,6 +300,129 @@ def _simple_compliance_check(title: str, body: str) -> dict:
     }
 
 
+# ===== 质检闸（QC Gate，2026-09-07 新增第 4 环节）=====
+
+# AI 腔用词（formatter prompt 明令禁止，出现即视为未按指令执行）
+_AI_TONE_WORDS = ("首先", "其次", "总而言之", "综上所述", "值得一提的是", "众所周知")
+# 模板/占位符残留特征
+_PLACEHOLDER_TOKENS = ("```", "placeholder", "TODO:", "{title}", "{body}", "{platform}")
+
+
+def _hard_quality_check(platform: str, title: str, body: str) -> List[str]:
+    """规则硬校验（免费、确定性）。返回问题清单，空列表=通过"""
+    issues = []
+    is_xhs = "小红书" in platform or platform in ("xiaohongshu", "xhs", "rednote")
+
+    # 标题
+    if len(title.strip()) < 5:
+        issues.append(f"标题过短({len(title.strip())}字)")
+    max_title = 25 if is_xhs else 35
+    if len(title) > max_title:
+        issues.append(f"标题超长({len(title)}字 > {max_title})")
+
+    # 正文
+    body = body or ""
+    min_body = 80 if is_xhs else 300
+    if len(body.strip()) < min_body:
+        issues.append(f"正文过短({len(body.strip())}字 < {min_body})")
+
+    # 模板/占位符残留
+    text = f"{title} {body}"
+    for token in _PLACEHOLDER_TOKENS:
+        if token in text:
+            issues.append(f"模板痕迹残留: 「{token}」")
+    if re.search(r"\{[a-z_]+\}", text):
+        issues.append("未替换的模板变量")
+
+    # AI 腔 / AI 自我暴露
+    for w in _AI_TONE_WORDS:
+        if w in body:
+            issues.append(f"AI 腔用词: 「{w}」")
+            break
+    if "作为AI" in text or "作为一个人工智能" in text:
+        issues.append("AI 自我暴露")
+
+    # 标题与正文首行完全相同（未做排版）
+    first_line = next((ln.strip() for ln in body.splitlines() if ln.strip()), "")
+    if first_line and title.strip() == first_line:
+        issues.append("标题与正文首行重复（未排版）")
+
+    return issues
+
+
+def run_quality_reviewer(platform: str, title: str, body: str) -> dict:
+    """质检师：LLM 五维打分。LLM 不可用时返回 score=-1（降级为规则-only 模式）"""
+    agent = load_agent("quality_reviewer")
+    prompt = render_template(
+        agent["llm_prompt_template"],
+        platform=platform,
+        title=title,
+        body=body[:3000],
+        min_score=QC_MIN_SCORE,
+    )
+    response = llm_call(prompt, system=agent["description"], json_mode=True, max_tokens=800)
+    parsed = _parse_llm_json(response)
+    if parsed is None:
+        return {"score": -1, "verdict": "pass", "issues": [], "suggestion": "", "_llm": False}
+    try:
+        score = int(round(float(parsed.get("score", 0))))
+    except (TypeError, ValueError):
+        score = -1
+    if score < 0:
+        return {"score": -1, "verdict": "pass", "issues": [], "suggestion": "", "_llm": False}
+    verdict = "pass" if (score >= QC_MIN_SCORE and str(parsed.get("verdict", "")).lower() != "fail") else "fail"
+    return {
+        "score": score,
+        "verdict": verdict,
+        "dimension_scores": parsed.get("dimension_scores", {}),
+        "issues": parsed.get("issues", []) or [],
+        "suggestion": parsed.get("suggestion", ""),
+        "_llm": True,
+    }
+
+
+def _qc_gate(platform: str, title: str, body: str) -> dict:
+    """质检闸总入口：规则硬校验 + LLM 打分双层把关
+
+    返回: {"passed": bool, "score": int, "rule_issues": [...], "llm": {...}, "feedback": "重写意见"}
+    - score=-1 表示 LLM 不可用 → 仅按规则判定（规则过即放行，备注 QC:rules）
+    """
+    rule_issues = _hard_quality_check(platform, title, body)
+    llm_qc = run_quality_reviewer(platform, title, body) if QC_ENABLED != "off" else {"score": -1, "issues": [], "suggestion": "", "_llm": False}
+    passed = (not rule_issues) and llm_qc.get("verdict") == "pass"
+
+    feedback_parts = []
+    if rule_issues:
+        feedback_parts.append("；".join(rule_issues))
+    if llm_qc.get("_llm") and llm_qc.get("issues"):
+        feedback_parts.append("；".join(str(x) for x in llm_qc["issues"][:5]))
+    if llm_qc.get("suggestion"):
+        feedback_parts.append(str(llm_qc["suggestion"]))
+
+    return {
+        "passed": passed,
+        "score": llm_qc.get("score", -1),
+        "rule_issues": rule_issues,
+        "llm": llm_qc,
+        "feedback": "；".join(feedback_parts),
+    }
+
+
+def _qc_summary(qc: dict) -> str:
+    """QC 结果一句话摘要（写审核备用）"""
+    score = qc.get("score", -1)
+    score_str = "rules" if score < 0 else f"{score}"
+    if qc.get("passed"):
+        return f"QC: {score_str}"
+    parts = [f"QC: {score_str}(未达标)"]
+    if qc.get("rule_issues"):
+        parts.append("规则: " + "；".join(qc["rule_issues"][:3]))
+    llm = qc.get("llm") or {}
+    if llm.get("issues"):
+        parts.append("意见: " + "；".join(str(x) for x in llm["issues"][:3])[:200])
+    return " | ".join(parts)
+
+
 # ===== 写飞书审核表 =====
 _PLATFORM_ZH = {
     "xiaohongshu": "小红书", "小红书": "小红书", "rednote": "小红书", "xhs": "小红书",
@@ -311,8 +446,13 @@ def _pick_title(formatted: dict) -> str:
     return str(formatted.get("title", "") or "")[:300]
 
 
-def write_to_audit_table(pick: dict, formatted: dict, risk: dict) -> Optional[str]:
-    """写入飞书审核表，返回 record_id"""
+def write_to_audit_table(pick: dict, formatted: dict, risk: dict, qc: dict = None) -> Optional[str]:
+    """写入飞书审核表，返回 record_id
+
+    qc 非空时：
+    - 通过 → 备注带 QC 分数（如 "risk: pass | QC: 86"）
+    - 未达标（重写一次后仍不过）→ 状态直接标「拒绝」，备注注明 QC 自动拦截（欢欢可翻看救回）
+    """
     from radar.notify.feishu_bitable import BitableClient
 
     client = BitableClient(
@@ -328,6 +468,16 @@ def write_to_audit_table(pick: dict, formatted: dict, risk: dict) -> Optional[st
     elif not (raw_url.get("link") or raw_url.get("text")):
         raw_url = None
 
+    # 状态 + 备注（risk + QC 双信息）
+    status = "待审"
+    note = f"risk: {risk.get('verdict', 'pass')}"
+    if qc is not None:
+        if qc.get("passed"):
+            note += f" | {_qc_summary(qc)}"
+        else:
+            status = "拒绝"
+            note += f" | QC自动拦截(可人工救回) | {_qc_summary(qc)}"
+
     fields = {
         "草稿ID": str(pick.get("draft_id", ""))[:200] or f"draft-{int(time.time())}",
         "商机标题": str(pick.get("opportunity_title", ""))[:500],
@@ -335,8 +485,8 @@ def write_to_audit_table(pick: dict, formatted: dict, risk: dict) -> Optional[st
         "标题": _pick_title(formatted)[:300],
         "正文": str(formatted.get("body_final", ""))[:5000],
         "标签": (formatted.get("tags") or [])[:10],
-        "状态": "待审",
-        "审核备注": f"risk: {risk.get('verdict', 'pass')}",
+        "状态": status,
+        "审核备注": note,
         "生成时间": int(time.time() * 1000),
     }
     # 情绪基调（策略师标注；单选字段枚举：共鸣/焦虑/愤怒/治愈/好奇/讽刺）
@@ -374,7 +524,7 @@ def _find_raw_opp(pick: dict, opportunities: list) -> dict:
 
 
 def run_pipeline(dry_run: bool = False, limit: int = 3) -> dict:
-    """主入口：M1 抓 → 策略 → 排版 → 风控 → 写审核表"""
+    """主入口：M1 抓 → 策略 → 排版 → 风控 → 质检(QC) → 写审核表"""
     # 1. 读 M1 商机
     opp_file = Path("data/opportunities.jsonl")
     if not opp_file.exists():
@@ -423,13 +573,35 @@ def run_pipeline(dry_run: bool = False, limit: int = 3) -> dict:
             print(f"  ✗ 合规 block：{risk.get('suggestion', '')}")
             continue
 
-        # 6. 写飞书审核表
+        # 6. 质检闸（QC：规则硬校验 + LLM 五维打分；不达标带意见重写一次）
+        qc = None
+        if QC_ENABLED != "off":
+            title = _pick_title(formatted)
+            print(f"→ quality_reviewer 质检...")
+            qc = _qc_gate(_norm_platform(pick["platform"]), title, formatted.get("body_final", ""))
+            if not qc["passed"]:
+                print(f"  ✗ QC 未达标: {_qc_summary(qc)}")
+                if qc.get("feedback"):
+                    print(f"  ↻ 带 QC 意见重写一次...")
+                    formatted = run_formatter(pick, raw, dry_run, rewrite_feedback=qc["feedback"])
+                    # 重写后内容变了 → 风控重扫 + 质检重打
+                    title = _pick_title(formatted)
+                    risk = run_risk_monitor(pick["platform"], title, formatted.get("body_final", ""), dry_run)
+                    if risk.get("verdict") == "block":
+                        print(f"  ✗ 重写版合规 block：{risk.get('suggestion', '')}")
+                        continue
+                    qc = _qc_gate(_norm_platform(pick["platform"]), title, formatted.get("body_final", ""))
+                    print(f"  {'✅ 重写达标' if qc['passed'] else '✗ 重写仍未达标 → 写表标拒绝'}: {_qc_summary(qc)}")
+            else:
+                print(f"  ✅ QC 通过: {_qc_summary(qc)}")
+
+        # 7. 写飞书审核表
         if dry_run:
             print(f"  [DRY-RUN] 跳过写飞书")
-            results.append({"pick": pick, "formatted": formatted, "risk": risk})
+            results.append({"pick": pick, "formatted": formatted, "risk": risk, "qc": _qc_summary(qc) if qc else None})
         else:
-            record_id = write_to_audit_table(pick, formatted, risk)
-            results.append({"pick": pick, "formatted": formatted, "risk": risk, "record_id": record_id})
+            record_id = write_to_audit_table(pick, formatted, risk, qc)
+            results.append({"pick": pick, "formatted": formatted, "risk": risk, "qc": qc, "record_id": record_id})
 
     return {
         "ts": time.time(),

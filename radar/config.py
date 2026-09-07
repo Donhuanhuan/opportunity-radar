@@ -83,6 +83,12 @@ EMAIL_TO = _env("EMAIL_TO", "")
 # ===== 输出条数 =====
 TOP_N = _env_int("TOP_N", 15)
 
+# ===== 内容质检闸（QC，agents.orchestrator 第 4 环节）=====
+# 开关：on=启用规则硬校验+LLM 五维打分；off=跳过质检（退回旧 3-Agent 行为）
+QC_ENABLED = _env("QC_ENABLED", "on")
+# LLM 打分及格线（0-100），低于此分触发重写，重写后仍低于则标「拒绝」拦截
+QC_MIN_SCORE = _env_int("QC_MIN_SCORE", 75)
+
 # ===== User-Agent =====
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (OpportunityRadar/1.0; +https://github.com/opportunity-radar)",

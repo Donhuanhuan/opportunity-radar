@@ -73,7 +73,7 @@ jobs:
             python -m radar.scan
           fi
 
-      - name: 🧠 M2 内容工厂（3-Agent：选题→排版→风控→写审核表=待审）
+      - name: 🧠 M2 内容工厂（4-Agent：选题→排版→风控→质检QC→写审核表=待审）
         if: github.event.inputs.dry_run != 'true'
         env:
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
@@ -87,8 +87,11 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           # 每天最多生成条数（默认 3，控 LLM 成本）
           M2_TOP_N: ${{ vars.M2_TOP_N || '3' }}
+          # 质检闸：及格线 75，不达标自动重写一次，仍不达标标拒绝拦截
+          QC_ENABLED: ${{ vars.QC_ENABLED || 'on' }}
+          QC_MIN_SCORE: ${{ vars.QC_MIN_SCORE || '75' }}
         run: |
-          echo "🧠 3-Agent 内容工厂：把 M1 刚落盘的 opportunities.jsonl 生成待审草稿"
+          echo "🧠 4-Agent 内容工厂：把 M1 刚落盘的 opportunities.jsonl 生成待审草稿（含质检闸）"
           python -m agents.orchestrator --limit ${M2_TOP_N}
           # 把当日商机作为 artifact 上传（审核表记录已含全部内容）
           mkdir -p artifacts
