@@ -46,6 +46,26 @@ FEISHU_APP_SECRET = _env("FEISHU_APP_SECRET", "")
 FEISHU_BITABLE_APP_TOKEN = _env("FEISHU_BITABLE_APP_TOKEN", "")
 FEISHU_BITABLE_TABLE_ID = _env("FEISHU_BITABLE_TABLE_ID", "")
 
+# ===== 飞书多维表格 · 内容草稿表（M2 输出）=====
+# 沿用同一 app_token，新建第二张表「内容草稿」
+# 字段：草稿ID/商机标题/商机链接/平台/标题/正文/标签/状态/审核备注/生成时间（10字段）
+DRAFTS_BITABLE_TABLE_ID = _env("DRAFTS_BITABLE_TABLE_ID", "")
+
+# ===== 飞书多维表格 · 内容审核表（M3 发布闸）=====
+# 在同一 app_token 下新建第三张表「内容审核」
+# 字段同 DRAFTS，但状态枚举有"待审/通过/拒绝/已发/失败"
+FEISHU_AUDIT_TABLE_ID = _env("FEISHU_AUDIT_TABLE_ID", "")
+
+# ===== M3 本地发布（路径B：agent-browser 半本机）=====
+# 发布器开关：on=执行发布，off=只生成草稿（默认 off，避免误触）
+PUBLISH_ENABLED = _env("PUBLISH_ENABLED", "off")
+# 发布节奏：conservative（每天 ≤1 篇）/ normal（≤3 篇）/ aggressive（≤5 篇）
+PUBLISH_PACE = _env("PUBLISH_PACE", "conservative")
+# 单日最大发布数（覆盖 PUBLISH_PACE 的上限）
+PUBLISH_DAILY_LIMIT = _env_int("PUBLISH_DAILY_LIMIT", 1)
+# agent-browser daemon 健康检查：连续失败 N 次则暂停今日发布
+PUBLISH_MAX_RETRIES = _env_int("PUBLISH_MAX_RETRIES", 2)
+
 # ===== 邮件 =====
 EMAIL_HOST = _env("EMAIL_HOST", "smtp.qq.com")
 EMAIL_PORT = _env_int("EMAIL_PORT", 465)

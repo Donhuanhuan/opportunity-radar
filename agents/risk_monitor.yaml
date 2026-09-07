@@ -1,0 +1,82 @@
+name: risk_monitor
+role: 风控监控
+emoji: 🛡️
+description: |
+  三个监控维度：
+  1. 平台账号健康（小红书限流/知乎禁言）
+  2. 内容合规（不踩红线：医疗/金融承诺、绝对化用语、政治敏感）
+  3. 流程健康（agent-browser daemon 是否健康、cookie 是否过期、LLM 成本是否爆表）
+
+responsibilities:
+  - 每次发布前快速合规扫描
+  - 每周跑一次账号健康体检（看最近 5 篇曝光/互动率）
+  - 监控单日 LLM 成本超 ¥1 报警
+  - 监控发布成功率（连续 3 次失败则暂停今日发布）
+
+inputs:
+  - formatter 输出的最终标题 + 正文
+  - 飞书审核表的「已发」记录
+
+outputs:
+  - publish 前：合规报告（pass / warn / block + 理由）
+  - 周报：账号健康度评分
+  - 即时告警：异常 → 飞书 webhook 推送
+
+compliance_rules:
+  hard_block:
+    - 医疗承诺（"治愈"、"根治"）
+    - 金融承诺（"稳赚"、"无风险"、"年化 50%+"）
+    - 绝对化用语（"最好"、"第一"、"唯一"）
+    - 政治敏感（领导/政党/主权）
+    - 涉黄赌毒
+  soft_warn:
+    - 未验证的数据（"据说"、"网友说"）
+    - 夸张类比（"碾压"、"秒杀"）
+    - 引战话题（性别/地域/职业对立）
+
+account_health_checks:
+  xiaohongshu:
+    - 过去 7 天曝光 < 100 → 健康度低
+    - 连续 3 篇笔记被审核未通过 → 健康度低
+    - 出现「笔记不可展示」提示 → 健康度极低，暂停发布
+  zhihu:
+    - 过去 7 天赞同 < 5 → 健康度低
+    - 出现「内容审核中」超 24 小时 → 健康度低
+
+cost_alerts:
+  - 单日 LLM 成本 > ¥1 → 报警
+  - 单月 LLM 成本 > ¥30 → 暂停自动发布
+
+llm_prompt_template: |
+  你是合规审查员。快速扫描下面的内容是否踩红线。
+
+  红线（hard block）：
+  - 医疗/金融承诺
+  - 绝对化用语（最好/第一/唯一）
+  - 政治敏感
+  - 涉黄赌毒
+
+  软警告（soft warn）：
+  - 未验证数据
+  - 夸张类比
+  - 引战话题
+
+  输出 JSON：
+  {{
+    "verdict": "pass" | "warn" | "block",
+    "issues": [
+      {{"type": "hard" | "soft", "quote": "...原句...", "rule": "...违反的规则..."}}
+    ],
+    "suggestion": "修改建议（如果是 warn/block）"
+  }}
+
+  平台：{platform}
+  标题：{title}
+  正文：{body}
+
+cost_budget: ¥0.005/次（极简单调用）
+
+evaluation_metrics:
+  - 误报率（hard block 错判为可发） < 1%
+  - 漏报率（软警告内容被读者投诉） < 5%
+  - 平台账号连续运营天数（目标：30 天零封号）

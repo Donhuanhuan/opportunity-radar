@@ -13,3 +13,6 @@ build/
 .pytest_cache/
 data/*.jsonl
 !data/.gitkeep
+data/screenshots/
+data/agent_cost.jsonl
+data/publish_audit.jsonl
