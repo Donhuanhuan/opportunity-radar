@@ -62,7 +62,8 @@ jobs:
           M2_TOP_N: ${{ vars.M2_TOP_N || '3' }}
           # 同时推送飞书群卡片 + 写入多维表格
           NOTIFY_CHANNELS: ${{ vars.NOTIFY_CHANNELS || 'feishu,feishu_bitable' }}
-          RADAR_SOURCES: ${{ github.event.inputs.source || 'hackernews,github_trending,producthunt,kr36,weibo' }}
+          # 内容方向：国内情绪热点三件套（微博/知乎/头条），海外技术源仅手动触发时用
+          RADAR_SOURCES: ${{ github.event.inputs.source || 'weibo,zhihu_hot,toutiao' }}
         run: |
           # 空结果不再算失败；这里若传 dry_run=true 则只打印不推送
           if [ "${{ github.event.inputs.dry_run || 'false' }}" = "true" ]; then
