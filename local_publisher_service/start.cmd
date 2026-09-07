@@ -1,15 +1,23 @@
 @echo off
-chcp 65001 >nul
-cd /d "D:\WorkBuddy\Make monney\Make monney\opportunity-radar\local_publisher_service"
+title Opportunity Radar - Local Publisher (port 19000)
+cd /d "%~dp0"
 
-REM 首次启动建议有窗口，确认登录态正常。稳定后可改为 set HEADLESS=true
+rem ---- locate node (fallback to managed node) ----
+set "NODE_CMD=node"
+where node >nul 2>nul
+if not errorlevel 1 goto :have_node
+if exist "C:\Users\30689\.workbuddy\binaries\node\versions\22.22.2\node.exe" set "NODE_CMD=C:\Users\30689\.workbuddy\binaries\node\versions\22.22.2\node.exe"
+if not exist "%NODE_CMD%" echo [ERROR] node.exe not found. Install Node.js first.
+if not exist "%NODE_CMD%" pause
+if not exist "%NODE_CMD%" exit /b 1
+:have_node
+
 set HEADLESS=false
 set PORT=19000
 
-echo 启动本地发布服务...
-echo 地址: http://localhost:%PORT%
-echo 按 Ctrl+C 停止
+echo Starting local publisher at http://localhost:19000
+echo Keep this window OPEN. Press Ctrl+C to stop.
 echo.
-node index.js
-
+"%NODE_CMD%" index.js
+echo.
 pause
