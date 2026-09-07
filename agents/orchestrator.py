@@ -27,6 +27,7 @@ CLI：
 """
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -170,6 +171,26 @@ def render_template(template: str, **kwargs) -> str:
     return template
 
 
+def _parse_llm_json(text: Optional[str]) -> Optional[dict]:
+    """健壮解析 LLM 返回的 JSON：剥离 ```json fence / 首尾说明文字
+
+    DeepSeek json mode 偶发在 JSON 前后夹带 markdown fence 或解释文本，
+    直接 json.loads 会抛 JSONDecodeError，这里做容错。
+    """
+    if not text:
+        return None
+    t = str(text).strip()
+    t = re.sub(r"^```[a-zA-Z]*\s*", "", t)
+    t = re.sub(r"\s*```$", "", t)
+    s, e = t.find("{"), t.rfind("}")
+    if s < 0 or e <= s:
+        return None
+    try:
+        return json.loads(t[s:e + 1])
+    except Exception:
+        return None
+
+
 # ===== Agent 调用 =====
 def run_strategist(opportunities: List[dict], dry_run: bool = False) -> dict:
     """内容策略师：选 Top 3 + 定平台"""
@@ -179,7 +200,8 @@ def run_strategist(opportunities: List[dict], dry_run: bool = False) -> dict:
         opportunities=json.dumps(opportunities[:5], ensure_ascii=False, indent=2),
     )
     response = llm_call(prompt, system=agent["description"], json_mode=True)
-    if response is None:
+    parsed = _parse_llm_json(response)
+    if parsed is None:
         # 降级：选评分最高的 3 条
         return {
             "picks": [
@@ -195,7 +217,7 @@ def run_strategist(opportunities: List[dict], dry_run: bool = False) -> dict:
             "rejected": [],
             "_fallback": True,
         }
-    return json.loads(response)
+    return parsed
 
 
 def run_formatter(pick: dict, raw_draft: dict, dry_run: bool = False) -> dict:
@@ -207,7 +229,8 @@ def run_formatter(pick: dict, raw_draft: dict, dry_run: bool = False) -> dict:
         raw_draft=json.dumps(raw_draft, ensure_ascii=False),
     )
     response = llm_call(prompt, system=agent["description"], json_mode=True)
-    if response is None:
+    parsed = _parse_llm_json(response)
+    if parsed is None:
         return {
             "title_candidates": [
                 {"label": "A", "text": raw_draft.get("title", "")},
@@ -215,12 +238,12 @@ def run_formatter(pick: dict, raw_draft: dict, dry_run: bool = False) -> dict:
                 {"label": "C", "text": raw_draft.get("title", "") + "（亲测）"},
                 {"label": "推荐", "text": raw_draft.get("title", "")},
             ],
-            "body_final": raw_draft.get("body", ""),
+            "body_final": raw_draft.get("body", "") or raw_draft.get("summary", ""),
             "image_prompts": [],
             "tags": raw_draft.get("tags", []),
             "_fallback": True,
         }
-    return json.loads(response)
+    return parsed
 
 
 def run_risk_monitor(platform: str, title: str, body: str, dry_run: bool = False) -> dict:
@@ -233,9 +256,10 @@ def run_risk_monitor(platform: str, title: str, body: str, dry_run: bool = False
         body=body[:1000],
     )
     response = llm_call(prompt, system=agent["description"], json_mode=True, max_tokens=500)
-    if response is None:
+    parsed = _parse_llm_json(response)
+    if parsed is None:
         return _simple_compliance_check(title, body)
-    return json.loads(response)
+    return parsed
 
 
 def _simple_compliance_check(title: str, body: str) -> dict:
@@ -263,6 +287,28 @@ def _simple_compliance_check(title: str, body: str) -> dict:
 
 
 # ===== 写飞书审核表 =====
+_PLATFORM_ZH = {
+    "xiaohongshu": "小红书", "小红书": "小红书", "rednote": "小红书", "xhs": "小红书",
+    "zhihu": "知乎", "知乎": "知乎", "zh": "知乎",
+}
+
+
+def _norm_platform(platform: str) -> str:
+    """单选字段平台名归一（英文→中文 select option）"""
+    return _PLATFORM_ZH.get(str(platform or "").strip().lower(), "小红书")
+
+
+def _pick_title(formatted: dict) -> str:
+    """取「推荐」标题，缺则最后一个候选"""
+    cands = formatted.get("title_candidates") or []
+    for c in cands:
+        if isinstance(c, dict) and str(c.get("label", "")).strip() in ("推荐", "recommended"):
+            return str(c.get("text", ""))
+    if cands and isinstance(cands[-1], dict):
+        return str(cands[-1].get("text", ""))
+    return str(formatted.get("title", "") or "")[:300]
+
+
 def write_to_audit_table(pick: dict, formatted: dict, risk: dict) -> Optional[str]:
     """写入飞书审核表，返回 record_id"""
     from radar.notify.feishu_bitable import BitableClient
@@ -273,18 +319,26 @@ def write_to_audit_table(pick: dict, formatted: dict, risk: dict) -> Optional[st
         app_token=FEISHU_AUDIT_APP_TOKEN,
     )
 
+    # 商机链接：必须是 {link, text} 结构；无任何有效内容则整字段不写（飞书 URL 字段报 URLFieldConvFail）
+    raw_url = pick.get("opportunity_url") or {}
+    if isinstance(raw_url, str):
+        raw_url = {"link": raw_url, "text": (pick.get("opportunity_title", "") or "")[:50] or "查看"}
+    elif not (raw_url.get("link") or raw_url.get("text")):
+        raw_url = None
+
     fields = {
-        "草稿ID": pick["draft_id"],
-        "商机标题": pick.get("opportunity_title", ""),
-        "商机链接": pick.get("opportunity_url", {}),
-        "平台": pick["platform"],
-        "标题": formatted.get("title_candidates", [{}])[-1].get("text", ""),
-        "正文": formatted.get("body_final", ""),
-        "标签": formatted.get("tags", []),
+        "草稿ID": str(pick.get("draft_id", ""))[:200] or f"draft-{int(time.time())}",
+        "商机标题": str(pick.get("opportunity_title", ""))[:500],
+        "平台": _norm_platform(pick.get("platform", "")),
+        "标题": _pick_title(formatted)[:300],
+        "正文": str(formatted.get("body_final", ""))[:5000],
+        "标签": (formatted.get("tags") or [])[:10],
         "状态": "待审",
         "审核备注": f"risk: {risk.get('verdict', 'pass')}",
         "生成时间": int(time.time() * 1000),
     }
+    if raw_url is not None:
+        fields["商机链接"] = raw_url
 
     try:
         record = client.create_record(FEISHU_AUDIT_TABLE_ID, fields)
@@ -295,6 +349,20 @@ def write_to_audit_table(pick: dict, formatted: dict, risk: dict) -> Optional[st
 
 
 # ===== 主入口 =====
+def _find_raw_opp(pick: dict, opportunities: list) -> dict:
+    """按 draft_id 找回对应商机：完整 url 相等 → url 内含 slug → 标题相等"""
+    pid = str(pick.get("draft_id", "")).strip()
+    if not pid:
+        return {}
+    pid_l = pid.lower()
+    for o in opportunities:
+        url = str(o.get("url", "") or "").strip()
+        title = str(o.get("title", "") or "").strip()
+        if url == pid or (url and pid_l in url.lower()) or title == pid:
+            return o
+    return {}
+
+
 def run_pipeline(dry_run: bool = False, limit: int = 3) -> dict:
     """主入口：M1 抓 → 策略 → 排版 → 风控 → 写审核表"""
     # 1. 读 M1 商机
@@ -315,22 +383,30 @@ def run_pipeline(dry_run: bool = False, limit: int = 3) -> dict:
     # 2. 策略师选 Top 3
     print("→ content_strategist 选题...")
     picks = run_strategist(opportunities, dry_run)
-    print(f"  选了 {len(picks.get('picks', []))} 条")
+    pick_list = picks.get("picks", [])
+    # LLM 可能编造超出输入数量的 pick → 截断到 min(3, 输入条数)
+    pick_list = pick_list[: min(3, len(opportunities))]
+    print(f"  选了 {len(pick_list)} 条")
 
     results = []
-    for pick in picks.get("picks", []):
+    for pick in pick_list:
         # 3. 找对应商机作为 raw_draft
-        raw = next((o for o in opportunities if o.get("draft_id") == pick["draft_id"] or o.get("url") == pick["draft_id"]), {})
+        raw = _find_raw_opp(pick, opportunities)
         if not raw:
-            raw = {"title": pick.get("angle", ""), "body": pick.get("angle", "")}
+            print(f"  ⚠ 跳过：商机不在本次输入中 draft_id={str(pick.get('draft_id'))[:60]}")
+            continue
+        # 回填商机标题/链接（供审核表展示）
+        pick.setdefault("opportunity_title", raw.get("title", "") or "")
+        pick.setdefault("opportunity_url", raw.get("url", "") or "")
+        raw.setdefault("body", raw.get("summary", ""))
 
         # 4. formatter
         print(f"→ formatter 润色 [{pick['platform']}]...")
         formatted = run_formatter(pick, raw, dry_run)
 
-        # 5. 风控
+        # 5. 风控（用最终将发布的「推荐」标题扫描，与写表一致）
         print(f"→ risk_monitor 合规扫描...")
-        title = formatted.get("title_candidates", [{}])[-1].get("text", "")
+        title = _pick_title(formatted)
         risk = run_risk_monitor(pick["platform"], title, formatted.get("body_final", ""), dry_run)
 
         if risk.get("verdict") == "block":
@@ -347,7 +423,7 @@ def run_pipeline(dry_run: bool = False, limit: int = 3) -> dict:
 
     return {
         "ts": time.time(),
-        "picks_count": len(picks.get("picks", [])),
+        "picks_count": len(pick_list),
         "results": results,
         "dry_run": dry_run,
     }

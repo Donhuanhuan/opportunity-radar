@@ -6,9 +6,11 @@
   python -m radar.scan --source hackernews  # 只跑指定源
   python -m radar.scan --dry-run          # 抓取但不推送
 """
+import json
 import sys
 import argparse
 from datetime import datetime
+from pathlib import Path
 
 from radar.config import SOURCES, NOTIFY_CHANNELS, TOP_N
 from radar.sources import hackernews, github_trending, producthunt, kr36, weibo
@@ -54,6 +56,15 @@ def run(sources: list, dry_run: bool = False) -> list:
     items = dedupe(items)
     items = top_n(items, TOP_N)
     print(f"🎯 命中 {len(items)} 条（已过滤违规 + Top{TOP_N}）")
+
+    # 本地落盘（orchestrator / M2 / M3 的唯一本地输入源）
+    data_dir = Path(__file__).resolve().parent.parent / "data"
+    data_dir.mkdir(exist_ok=True, parents=True)
+    opp_file = data_dir / "opportunities.jsonl"
+    with open(opp_file, "w", encoding="utf-8") as f:
+        for it in items:
+            f.write(json.dumps(it, ensure_ascii=False) + "\n")
+    print(f"💾 商机本地落盘: {opp_file} ({len(items)} 条)")
 
     # 推送
     if not dry_run:

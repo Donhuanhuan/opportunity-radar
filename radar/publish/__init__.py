@@ -1,16 +1,26 @@
-"""本地发布器（路径B：agent-browser 半本机）
+"""发布模块（路径 B：真本机 Playwright 服务）
 
-⚠️ 关键说明：本模块调用 `agent-browser` CLI（WorkBuddy 云端 daemon）。
-它**不是**你本机浏览器，但 cookie 在 daemon 内持久化（关闭 daemon 后失效）。
+链路：
+飞书审核表（人工点"通过"） → audit_gate 轮询 → local_publisher.publish()
+→ 调本机服务 http://localhost:19000/publish → Edge 登录态真发
 """
-from .local_publisher import PublishTask, publish_xiaohongshu, publish_zhihu, preflight_check
+from .local_publisher import (
+    PublishTask,
+    publish,
+    update_audit_status,
+    check_local_service,
+    call_local_service,
+    pull_approved_tasks,
+)
 from .audit_gate import AuditGate, AuditDecision
 
 __all__ = [
     "PublishTask",
-    "publish_xiaohongshu",
-    "publish_zhihu",
-    "preflight_check",
+    "publish",
+    "update_audit_status",
+    "check_local_service",
+    "call_local_service",
+    "pull_approved_tasks",
     "AuditGate",
     "AuditDecision",
 ]

@@ -29,11 +29,14 @@ llm_prompt_template: |
   4. 平台匹配：小红书适合情绪共鸣 + 视觉冲击；知乎适合深度信息 + 理性分析
   5. 不能踩平台红线（小红书禁硬广、知乎禁低质水文）
 
+  重要约束：picks[].draft_id 必须**原样使用**输入商机 JSON 里该商机的 "url" 完整值
+  （它是唯一键，用于下游找回原文），禁止改写、缩写、自创 ID 或 slug。
+
   输出 JSON：
   {{
     "picks": [
       {{
-        "draft_id": "...",
+        "draft_id": "<原样复制该商机的 url 完整值>",
         "platform": "xiaohongshu" | "zhihu",
         "angle": "一句话切入角度",
         "target_audience": "一句话目标人群",
