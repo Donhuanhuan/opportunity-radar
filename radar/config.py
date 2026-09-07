@@ -9,29 +9,44 @@ try:
 except ImportError:
     pass
 
+
+def _env(key: str, default: str = "") -> str:
+    """读取环境变量；GitHub Actions 会把未配置 secret 传成空串，这里回退默认"""
+    v = os.getenv(key)
+    return v if v not in (None, "") else default
+
+
+def _env_int(key: str, default: int) -> int:
+    """读取整型环境变量，空串/非法值回退默认"""
+    try:
+        return int(_env(key, str(default)))
+    except ValueError:
+        return default
+
+
 # ===== 信号源开关 =====
-SOURCES = os.getenv("RADAR_SOURCES", "hackernews,github_trending,producthunt,kr36,weibo").split(",")
+SOURCES = _env("RADAR_SOURCES", "hackernews,github_trending,producthunt,kr36,weibo").split(",")
 
 # ===== 过滤关键词（命中加分）=====
-KEYWORDS_HOT = os.getenv("KEYWORDS_HOT", "AI,SaaS,出海,跨境,短视频,数字人,工具,自动化,赚钱,副业").split(",")
-KEYWORDS_DEMAND = os.getenv("KEYWORDS_DEMAND", "效率,提效,降本,变现,赚钱,省时间").split(",")
-KEYWORDS_BLOCK = os.getenv("KEYWORDS_BLOCK", "赌博,博彩,传销,虚拟币,资金盘,黄,赌,毒").split(",")
+KEYWORDS_HOT = _env("KEYWORDS_HOT", "AI,SaaS,出海,跨境,短视频,数字人,工具,自动化,赚钱,副业").split(",")
+KEYWORDS_DEMAND = _env("KEYWORDS_DEMAND", "效率,提效,降本,变现,赚钱,省时间").split(",")
+KEYWORDS_BLOCK = _env("KEYWORDS_BLOCK", "赌博,博彩,传销,虚拟币,资金盘,黄,赌,毒").split(",")
 
 # ===== 通知渠道 =====
-NOTIFY_CHANNELS = os.getenv("NOTIFY_CHANNELS", "feishu").split(",")
+NOTIFY_CHANNELS = _env("NOTIFY_CHANNELS", "feishu").split(",")
 
 # ===== 飞书机器人 =====
-FEISHU_WEBHOOK = os.getenv("FEISHU_WEBHOOK", "")
+FEISHU_WEBHOOK = _env("FEISHU_WEBHOOK", "")
 
 # ===== 邮件 =====
-EMAIL_HOST = os.getenv("EMAIL_HOST", "smtp.qq.com")
-EMAIL_PORT = int(os.getenv("EMAIL_PORT", "465"))
-EMAIL_USER = os.getenv("EMAIL_USER", "")
-EMAIL_PASS = os.getenv("EMAIL_PASS", "")
-EMAIL_TO = os.getenv("EMAIL_TO", "")
+EMAIL_HOST = _env("EMAIL_HOST", "smtp.qq.com")
+EMAIL_PORT = _env_int("EMAIL_PORT", 465)
+EMAIL_USER = _env("EMAIL_USER", "")
+EMAIL_PASS = _env("EMAIL_PASS", "")
+EMAIL_TO = _env("EMAIL_TO", "")
 
 # ===== 输出条数 =====
-TOP_N = int(os.getenv("TOP_N", "15"))
+TOP_N = _env_int("TOP_N", 15)
 
 # ===== User-Agent =====
 HEADERS = {
