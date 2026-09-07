@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from radar.config import SOURCES, NOTIFY_CHANNELS, TOP_N
-from radar.sources import hackernews, github_trending, producthunt, kr36, weibo
+from radar.sources import hackernews, github_trending, producthunt, kr36, weibo, zhihu_hot, toutiao
 from radar.notify import feishu, email, feishu_bitable
 from radar.filters import filter_block, score_relevance, dedupe, top_n
 
@@ -24,6 +24,8 @@ SOURCE_MODULES = {
     "producthunt": producthunt,
     "kr36": kr36,
     "weibo": weibo,
+    "zhihu_hot": zhihu_hot,
+    "toutiao": toutiao,
 }
 
 NOTIFY_MODULES = {

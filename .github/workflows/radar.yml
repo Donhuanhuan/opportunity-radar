@@ -73,81 +73,37 @@ jobs:
             python -m radar.scan
           fi
 
-      - name: 🧠 M2 内容工厂
+      - name: 🧠 M2 内容工厂（3-Agent：选题→排版→风控→写审核表=待审）
         if: github.event.inputs.dry_run != 'true'
         env:
-          # 内容草稿表
-          DRAFTS_BITABLE_APP_TOKEN: ${{ secrets.DRAFTS_BITABLE_APP_TOKEN }}
-          DRAFTS_BITABLE_TABLE_ID: ${{ secrets.DRAFTS_BITABLE_TABLE_ID }}
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
-          # LLM
+          # 内容审核表（M3 发布闸，供欢欢人工点「通过」）
+          FEISHU_AUDIT_APP_TOKEN: ${{ secrets.FEISHU_AUDIT_APP_TOKEN }}
+          FEISHU_AUDIT_TABLE_ID: ${{ secrets.FEISHU_AUDIT_TABLE_ID }}
+          # LLM（按性价比自动 DeepSeek → Claude → OpenAI）
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # 每天最多生成条数（默认 3，控 LLM 成本）
           M2_TOP_N: ${{ vars.M2_TOP_N || '3' }}
         run: |
-          echo "🧠 M2 内容工厂：把今日 Top ${M2_TOP_N} 商机生成小红书+知乎双版本文案"
-          # 从商机池取最新 ${M2_TOP_N} 条 (token 复用)
-          python <<'PYEOF'
-          import json, os, sys, urllib.request
-          APP_TOKEN = os.environ.get("FEISHU_BITABLE_APP_TOKEN", "")
-          TABLE_ID  = os.environ.get("FEISHU_BITABLE_TABLE_ID", "")
-          APP_ID    = os.environ.get("FEISHU_APP_ID", "")
-          SECRET    = os.environ.get("FEISHU_APP_SECRET", "")
-          M2_TOP    = int(os.environ.get("M2_TOP_N", "3"))
-          if not all([APP_TOKEN, TABLE_ID, APP_ID, SECRET]):
-              print("⚠️ 商机池表配置不全，M2 跳过")
-              sys.exit(0)
-          # 拿 token
-          req = urllib.request.Request(
-              "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
-              data=json.dumps({"app_id": APP_ID, "app_secret": SECRET}).encode(),
-              headers={"Content-Type": "application/json"}, method="POST")
-          token = json.load(urllib.request.urlopen(req))["tenant_access_token"]
-          # 拉今日记录（按 date desc 排）
-          url = (f"https://open.feishu.cn/open-apis/bitable/v1/apps/{APP_TOKEN}/tables/{TABLE_ID}/records"
-                 f"?sort=date%20DESC&page_size={max(M2_TOP*2, 10)}")
-          req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-          data = json.load(urllib.request.urlopen(req))
-          items = []
-          for rec in data.get("data", {}).get("items", []):
-              f = rec.get("fields", {})
-              items.append({
-                  "title":   f.get("title") or f.get("文本") or "",
-                  "url":     (f.get("url") or {}).get("link") if isinstance(f.get("url"), dict) else "",
-                  "source":  f.get("source", ""),
-                  "score":   int(f.get("score", 0) or 0),
-                  "summary": f.get("summary", ""),
-                  "tags":    f.get("tags", []) or [],
-              })
-              if len(items) >= M2_TOP:
-                  break
-          if not items:
-              print("⚠️ 商机池今日无记录，M2 跳过")
-              sys.exit(0)
-          print(f"📥 从商机池拉了 {len(items)} 条：")
-          for it in items:
-              print(f"  - {it['title'][:60]}  (score={it['score']})")
-          # 写到文件，给 m2_pipeline 吃
-          with open("/tmp/m2_items.json", "w", encoding="utf-8") as f:
-              json.dump(items, f, ensure_ascii=False)
-          PYEOF
-          # 跑 m2_pipeline
-          python -m radar.m2_pipeline --items-file /tmp/m2_items.json --top ${M2_TOP_N}
-          # 把 JSONL 草稿作为 artifact 上传
+          echo "🧠 3-Agent 内容工厂：把 M1 刚落盘的 opportunities.jsonl 生成待审草稿"
+          python -m agents.orchestrator --limit ${M2_TOP_N}
+          # 把当日商机作为 artifact 上传（审核表记录已含全部内容）
           mkdir -p artifacts
-          cp -f data/drafts.jsonl artifacts/drafts-$(date -u +%Y%m%dT%H%M%SZ).jsonl 2>/dev/null || true
+          cp -f data/opportunities.jsonl artifacts/opportunities-$(date -u +%Y%m%dT%H%M%SZ).jsonl 2>/dev/null || true
+          cp -f data/agent_cost.jsonl artifacts/agent_cost-$(date -u +%Y%m%dT%H%M%SZ).jsonl 2>/dev/null || true
 
-      - name: 📤 上传草稿产物
+      - name: 📤 上传当日商机产物
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: drafts-jsonl
-          path: data/drafts.jsonl
+          name: opportunities-jsonl
+          path: data/opportunities.jsonl
           if-no-files-found: ignore
 
       - name: 🏁 完成上报
         if: always()
         run: |
-          echo "✅ 商机雷达 + 内容工厂 已完成 · $(date -Iseconds)"
+          echo "✅ 商机雷达(M1 国内情绪热点) + 内容工厂(3-Agent) 已完成 · $(date -Iseconds)"

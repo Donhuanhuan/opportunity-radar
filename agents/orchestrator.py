@@ -197,7 +197,7 @@ def run_strategist(opportunities: List[dict], dry_run: bool = False) -> dict:
     agent = load_agent("content_strategist")
     prompt = render_template(
         agent["llm_prompt_template"],
-        opportunities=json.dumps(opportunities[:5], ensure_ascii=False, indent=2),
+        opportunities=json.dumps(opportunities[:10], ensure_ascii=False, indent=2),
     )
     response = llm_call(prompt, system=agent["description"], json_mode=True)
     parsed = _parse_llm_json(response)
@@ -226,6 +226,7 @@ def run_formatter(pick: dict, raw_draft: dict, dry_run: bool = False) -> dict:
     prompt = render_template(
         agent["llm_prompt_template"],
         platform=pick["platform"],
+        sentiment=pick.get("sentiment", ""),
         raw_draft=json.dumps(raw_draft, ensure_ascii=False),
     )
     response = llm_call(prompt, system=agent["description"], json_mode=True)
@@ -263,9 +264,10 @@ def run_risk_monitor(platform: str, title: str, body: str, dry_run: bool = False
 
 
 def _simple_compliance_check(title: str, body: str) -> dict:
-    """规则兜底：hard block + soft warn 关键词扫描"""
-    hard_block = ["治愈", "根治", "稳赚", "无风险", "保证有效", "第一", "唯一", "最好"]
-    soft_warn = ["据说", "网友说", "碾压", "秒杀", "吊打", "yyds"]
+    """规则兜底：hard block + soft warn 关键词扫描（民生热点版）"""
+    hard_block = ["治愈", "根治", "包治", "按这个方子", "稳赚", "无风险", "保证有效", "必涨",
+                  "第一", "唯一", "最好", "百分百", "实锤", "就是骗局", "最全"]
+    soft_warn = ["据说", "网友说", "碾压", "秒杀", "吊打", "yyds", "全都", "必然", "绝对"]
     text = f"{title} {body}"
 
     for kw in hard_block:
@@ -337,6 +339,14 @@ def write_to_audit_table(pick: dict, formatted: dict, risk: dict) -> Optional[st
         "审核备注": f"risk: {risk.get('verdict', 'pass')}",
         "生成时间": int(time.time() * 1000),
     }
+    # 情绪基调（策略师标注；单选字段枚举：共鸣/焦虑/愤怒/治愈/好奇/讽刺）
+    sentiment = str(pick.get("sentiment", "") or "").strip()
+    if sentiment:
+        fields["情绪"] = sentiment if sentiment in ("共鸣", "焦虑", "愤怒", "治愈", "好奇", "讽刺") else "共鸣"
+    # 配图说明：取 formatter 封面图 prompt（供生图链使用，图路径后置回填）
+    imgs = formatted.get("image_prompts") or []
+    if imgs and isinstance(imgs[0], dict) and imgs[0].get("prompt"):
+        fields["配图说明"] = str(imgs[0]["prompt"])[:1000]
     if raw_url is not None:
         fields["商机链接"] = raw_url
 

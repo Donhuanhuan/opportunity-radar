@@ -24,13 +24,16 @@ def _env_int(key: str, default: int) -> int:
         return default
 
 
-# ===== 信号源开关 =====
-SOURCES = _env("RADAR_SOURCES", "hackernews,github_trending,producthunt,kr36,weibo").split(",")
+# ===== 信号源开关（国内情绪热点：微博热搜 + 知乎热榜 + 头条热榜）=====
+SOURCES = _env("RADAR_SOURCES", "weibo,zhihu_hot,toutiao").split(",")
 
 # ===== 过滤关键词（命中加分）=====
-KEYWORDS_HOT = _env("KEYWORDS_HOT", "AI,SaaS,出海,跨境,短视频,数字人,工具,自动化,赚钱,副业").split(",")
-KEYWORDS_DEMAND = _env("KEYWORDS_DEMAND", "效率,提效,降本,变现,赚钱,省时间").split(",")
-KEYWORDS_BLOCK = _env("KEYWORDS_BLOCK", "赌博,博彩,传销,虚拟币,资金盘,黄,赌,毒").split(",")
+# 主题加分词（情绪热点常见话题域）
+KEYWORDS_HOT = _env("KEYWORDS_HOT", "职场,就业,工资,加班,35岁,教育,考研,考公,家庭,婚姻,彩礼,消费,租房,买房,健康,减肥,养老,宠物,旅游").split(",")
+# 情绪触发词（共鸣/争议浓度高，命中说明适合做内容）
+KEYWORDS_DEMAND = _env("KEYWORDS_DEMAND", "争议,内耗,焦虑,破防,治愈,避雷,真相,揭秘,凭什么,怎么办,为什么").split(",")
+# 硬过滤（任何来源一律剔除）
+KEYWORDS_BLOCK = _env("KEYWORDS_BLOCK", "赌博,博彩,传销,虚拟币,资金盘,黄,赌,毒,代开发票,刷单,招嫖").split(",")
 
 # ===== 通知渠道 =====
 NOTIFY_CHANNELS = _env("NOTIFY_CHANNELS", "feishu").split(",")

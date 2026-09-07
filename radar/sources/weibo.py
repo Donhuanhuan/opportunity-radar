@@ -1,37 +1,69 @@
-"""微博热搜榜（抓 weibo.com/ajax/side/hotSearch）"""
-import requests
-from radar.config import HEADERS
+"""微博热搜榜
 
-# 多个公开接口备选
+官方桌面接口 weibo.com/ajax/side/hotSearch 通常需要登录 cookie，匿名请求常拿不到数据。
+策略：依次尝试官方接口 → 第三方聚合镜像（vvhan/oioweb），全部失败则返回空（容忍空源，
+不阻塞整条流水线）。如持续 0 条，可考虑后续用本机 Edge 登录态抓取。
+"""
+import requests
+
+# 依次尝试：官方 → vvhan → oioweb
 URLS = [
-    "https://weibo.com/ajax/side/hotSearch",  # 桌面端
-    "https://api.uomg.com/api/rand.qinghua",  # 备用：随机鸡汤（避免被封后空跑）
+    ("weibo-official", "https://weibo.com/ajax/side/hotSearch"),
+    ("vvhan", "https://api.vvhan.com/api/hotlist/wbHot"),
+    ("oioweb", "https://api.oioweb.cn/api/common/HotList?type=weibo"),
 ]
+
+BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+    "Accept-Language": "zh-CN,zh;q=0.9",
+    "Referer": "https://weibo.com/",
+}
 
 
 def fetch(limit: int = 20) -> list:
     out = []
-    try:
-        r = requests.get(URLS[0], headers=HEADERS, timeout=8)
-        data = r.json().get("data", {}).get("realtime", [])
-        for item in data[:limit]:
-            out.append({
-                "source": "微博热搜",
-                "title": item.get("word", "").strip(),
-                "summary": item.get("note", "")[:200] or "微博热搜词",
-                "url": f"https://s.weibo.com/weibo?q=%23{item.get('word','')}%23",
-                "score": item.get("num", 0),  # 热度值
-                "comments": 0,
-            })
-    except Exception as e:
-        print(f"[Weibo] 抓取失败: {e}")
-        # 兜底：返回示例，避免整条流水线挂掉
-        out = [{
-            "source": "微博热搜",
-            "title": "（微博接口暂时不可用）",
-            "summary": str(e)[:200],
-            "url": "https://s.weibo.com",
-            "score": 0,
-            "comments": 0,
-        }]
+    for name, url in URLS:
+        try:
+            r = requests.get(url, headers=BROWSER_HEADERS, timeout=6)
+            if r.status_code != 200:
+                continue
+            j = r.json()
+            if name == "weibo-official":
+                data = (j.get("data") or {}).get("realtime", [])
+                for item in data[:limit]:
+                    word = (item.get("word") or "").strip()
+                    if not word:
+                        continue
+                    out.append({
+                        "source": "微博热搜",
+                        "title": word[:80],
+                        "summary": (item.get("note") or "微博热搜词")[:200],
+                        "url": f"https://s.weibo.com/weibo?q=%23{word}%23",
+                        "score": int(item.get("num", 0) or 0),
+                        "comments": 0,
+                    })
+                if out:
+                    return out
+            else:
+                arr = j.get("data") or []
+                ok = j.get("success") or j.get("code") in (200, 1) or arr
+                for item in (arr if ok else [])[:limit]:
+                    title = (item.get("title") or item.get("word") or "").strip()
+                    if not title:
+                        continue
+                    hot = int(item.get("hot", item.get("num", 0)) or 0)
+                    out.append({
+                        "source": "微博热搜",
+                        "title": title[:80],
+                        "summary": f"微博热搜 · 热度 {hot}" if hot else "微博热搜词",
+                        "url": f"https://s.weibo.com/weibo?q=%23{title}%23",
+                        "score": hot,
+                        "comments": 0,
+                    })
+                if out:
+                    return out
+        except Exception as e:
+            print(f"[Weibo/{name}] 抓取失败: {e}")
+            continue
     return out
