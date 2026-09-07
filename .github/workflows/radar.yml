@@ -12,9 +12,9 @@ on:
         required: false
         default: ''
       dry_run:
-        description: '是否仅抓取不推送'
+        description: '是否仅抓取不推送（false=真实推送到飞书）'
         required: false
-        default: 'true'
+        default: 'false'
 
 jobs:
   scan:
@@ -48,9 +48,12 @@ jobs:
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           RADAR_SOURCES: ${{ github.event.inputs.source || 'hackernews,github_trending,producthunt,kr36,weibo' }}
         run: |
+          # 空结果不再算失败；这里若传 dry_run=true 则只打印不推送
           if [ "${{ github.event.inputs.dry_run || 'false' }}" = "true" ]; then
+            echo "🔕 测试模式（dry-run）：只抓取，不推送"
             python -m radar.scan --dry-run
           else
+            echo "📨 正式模式：扫描后推送飞书"
             python -m radar.scan
           fi
 

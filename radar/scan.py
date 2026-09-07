@@ -82,7 +82,9 @@ def main():
 
     items = run(sources, dry_run=args.dry_run)
     print(f"🏁 完成，输出 {len(items)} 条")
-    return 0 if items else 1
+    if not items:
+        print("⚠️ 本次扫描 0 条命中（可能源临时不可用或过滤后为空），视为正常空跑")
+    return 0
 
 
 if __name__ == "__main__":
