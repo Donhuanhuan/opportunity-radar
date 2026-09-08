@@ -64,6 +64,8 @@ jobs:
           NOTIFY_CHANNELS: ${{ vars.NOTIFY_CHANNELS || 'feishu,feishu_bitable' }}
           # 内容方向：国内情绪热点三件套（微博/知乎/头条），海外技术源仅手动触发时用
           RADAR_SOURCES: ${{ github.event.inputs.source || 'weibo,zhihu_hot,toutiao' }}
+          # 目标内容平台：策略调整后默认仅做知乎（小红书另有他用，不自动化）
+          RADAR_PLATFORMS: ${{ vars.RADAR_PLATFORMS || 'zhihu' }}
         run: |
           # 空结果不再算失败；这里若传 dry_run=true 则只打印不推送
           if [ "${{ github.event.inputs.dry_run || 'false' }}" = "true" ]; then
@@ -88,6 +90,8 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           # 每天最多生成条数（默认 3，控 LLM 成本）
           M2_TOP_N: ${{ vars.M2_TOP_N || '3' }}
+          # 目标内容平台：与上面 RADAR_PLATFORMS 保持一致，避免云端变量不一致
+          RADAR_PLATFORMS: ${{ vars.RADAR_PLATFORMS || 'zhihu' }}
           # 质检闸：及格线 75，不达标自动重写一次，仍不达标标拒绝拦截
           QC_ENABLED: ${{ vars.QC_ENABLED || 'on' }}
           QC_MIN_SCORE: ${{ vars.QC_MIN_SCORE || '75' }}
@@ -110,4 +114,4 @@ jobs:
       - name: 🏁 完成上报
         if: always()
         run: |
-          echo "✅ 商机雷达(M1 国内情绪热点) + 内容工厂(3-Agent) 已完成 · $(date -Iseconds)"
+          echo "✅ 商机雷达(M1 国内情绪热点) + 内容工厂(4-Agent · 平台=${RADAR_PLATFORMS}) 已完成 · $(date -Iseconds)"

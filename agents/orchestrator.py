@@ -40,6 +40,7 @@ from radar.config import (
     FEISHU_APP_ID, FEISHU_APP_SECRET,
     FEISHU_AUDIT_APP_TOKEN, FEISHU_AUDIT_TABLE_ID,
     QC_ENABLED, QC_MIN_SCORE,
+    PLATFORMS as RADAR_PLATFORMS,
 )
 from radar.publish.feishu_audit import SCHEMA as AUDIT_SCHEMA
 
@@ -205,21 +206,27 @@ def run_strategist(opportunities: List[dict], dry_run: bool = False) -> dict:
     response = llm_call(prompt, system=agent["description"], json_mode=True)
     parsed = _parse_llm_json(response)
     if parsed is None:
-        # 降级：选评分最高的 3 条
+        # 降级：选评分最高的 N 条 + 按 RADAR_PLATFORMS 循环分配平台
+        # （策略调整：默认仅 zhihu，PLATFORMS 列表即允许平台）
+        ranked = sorted(opportunities, key=lambda x: x.get("score", 0), reverse=True)[:3]
         return {
             "picks": [
                 {
                     "draft_id": op.get("draft_id", op.get("url", "")),
-                    "platform": "xiaohongshu" if i < 2 else "zhihu",
+                    "platform": RADAR_PLATFORMS[i % len(RADAR_PLATFORMS)] if RADAR_PLATFORMS else "zhihu",
                     "angle": op.get("title", "")[:30],
                     "target_audience": "通用",
                     "title_direction": ["A", "B", "C"],
                 }
-                for i, op in enumerate(sorted(opportunities, key=lambda x: x.get("score", 0), reverse=True)[:3])
+                for i, op in enumerate(ranked)
             ],
             "rejected": [],
             "_fallback": True,
         }
+    # LLM 成功：把不在白名单的平台强制改回第一个允许的平台（避免出现小红书等未启用平台）
+    for p in parsed.get("picks", []):
+        if str(p.get("platform", "")).lower() not in [x.lower() for x in RADAR_PLATFORMS]:
+            p["platform"] = RADAR_PLATFORMS[0] if RADAR_PLATFORMS else "zhihu"
     return parsed
 
 

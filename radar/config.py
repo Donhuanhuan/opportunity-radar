@@ -27,6 +27,11 @@ def _env_int(key: str, default: int) -> int:
 # ===== 信号源开关（国内情绪热点：微博热搜 + 知乎热榜 + 头条热榜）=====
 SOURCES = _env("RADAR_SOURCES", "weibo,zhihu_hot,toutiao").split(",")
 
+# ===== 目标内容平台（策略调整：2026-09-08 起小红书另有他用，自动化只做知乎）=====
+# 多个用英文逗号分隔，可选：zhihu, xiaohongshu
+# audit_gate.process_approved 会以白名单兜底过滤：不在此列表的「通过」记录自动标「拒绝」
+PLATFORMS = _env("RADAR_PLATFORMS", "zhihu").split(",")
+
 # ===== 过滤关键词（命中加分）=====
 # 主题加分词（情绪热点常见话题域）
 KEYWORDS_HOT = _env("KEYWORDS_HOT", "职场,就业,工资,加班,35岁,教育,考研,考公,家庭,婚姻,彩礼,消费,租房,买房,健康,减肥,养老,宠物,旅游").split(",")

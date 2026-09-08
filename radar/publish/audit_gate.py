@@ -22,7 +22,7 @@ from typing import List, Optional
 from radar.config import (
     FEISHU_APP_ID, FEISHU_APP_SECRET,
     FEISHU_AUDIT_APP_TOKEN, FEISHU_AUDIT_TABLE_ID,
-    PUBLISH_ENABLED,
+    PUBLISH_ENABLED, PLATFORMS as RADAR_PLATFORMS,
 )
 from radar.publish.local_publisher import PublishTask, publish, check_local_service
 from radar.notify.feishu_bitable import BitableClient
@@ -128,6 +128,20 @@ class AuditGate:
             return results
 
         for item in approved:
+            # 平台白名单兜底（2026-09-08 策略调整：默认仅 zhihu；小红书自动发布链路停用）
+            # 飞书表里若残留「通过」状态的非白平台记录，自动标拒绝并跳过发布
+            allowed = [x.strip().lower() for x in RADAR_PLATFORMS]
+            if not allowed:
+                allowed = ["zhihu"]
+            if item.platform.lower() not in allowed:
+                self.mark_status(
+                    item.record_id, AuditDecision.REJECTED,
+                    f"平台已下线：{item.platform} 不在 RADAR_PLATFORMS({','.join(allowed)}) 白名单，跳过自动发布（2026-09-08 策略）"
+                )
+                results["skipped"] += 1
+                results["details"].append({"draft_id": item.draft_id, "reason": "platform-disabled"})
+                print(f"  ✗ 跳过 {item.draft_id}: 平台 {item.platform} 已下线")
+                continue
             task = item.to_publish_task()
             log = publish(task, dry_run=dry_run)
 
@@ -148,11 +162,17 @@ class AuditGate:
 
     def _record_to_item(self, record: dict) -> AuditItem:
         f = record.get("fields", {})
-        platform = _field_text(f.get("平台", "xiaohongshu")).lower()
-        if platform in ("小红书", "xiaohongshu"):
+        platform_raw = _field_text(f.get("平台", ""))
+        # 归一：中文/英文别名统一成小写英文 key
+        p = platform_raw.strip().lower()
+        if p in ("小红书", "xiaohongshu", "xhs", "rednote"):
             platform = "xiaohongshu"
-        elif platform in ("知乎", "zhihu"):
+        elif p in ("知乎", "zhihu", "zh"):
             platform = "zhihu"
+        else:
+            # 未识别平台默认 zhihu（2026-09-08 起小红书自动化停用，默认走白名单首个平台）
+            allowed = [x.strip().lower() for x in RADAR_PLATFORMS] or ["zhihu"]
+            platform = allowed[0]
 
         tags = _field_text(f.get("标签", ""))
         hashtags = [t.strip().lstrip("#") for t in tags.split(",") if t.strip()]
