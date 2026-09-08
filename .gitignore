@@ -23,3 +23,5 @@ local_publisher_service/edge-profile-cachebak/
 local_publisher_service/diag_*.js
 local_publisher_service/diag_*.png
 local_publisher_service/probe*.js
+# IDE 元数据
+.workbuddy/

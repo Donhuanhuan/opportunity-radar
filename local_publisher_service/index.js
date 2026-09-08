@@ -31,15 +31,51 @@ async function humanDelay(page, ms) {
   await page.waitForTimeout(t);
 }
 
+// 关闭可能遮挡点击的活动弹窗/浮层（知乎提问大赛、小红书引导等）
+async function dismissModals(page) {
+  try {
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(400);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(400);
+  } catch (e) { /* ignore */ }
+  try {
+    const closers = await page.$('.Modal-closeButton')
+      || await page.$('[aria-label*="关闭"]')
+      || await page.$('[class*="close"]')
+      || await page.$('button:has-text("关闭")')
+      || await page.$('text=我知道了');
+    if (closers) {
+      const visible = await closers.isVisible().catch(() => false);
+      if (visible) {
+        await closers.evaluate((el) => el.click());
+        await page.waitForTimeout(800);
+      }
+    }
+  } catch (e) { /* ignore */ }
+}
+
+// 可见点击 -> 失败兜底 DOM 直点（绕过广告浮层/backdrop 的 pointer-events 拦截）
+async function robustClick(page, handle) {
+  try {
+    await handle.click({ timeout: 8000 });
+  } catch (e) {
+    log('可见点击被拦截，改用 DOM click 兜底:', String(e.message).split('\n')[0]);
+    await handle.evaluate((el) => el.click());
+  }
+  await page.waitForTimeout(1200);
+}
+
 async function publishXiaohongshu(page, task) {
   log('发布小红书:', task.title);
   await page.goto('https://creator.xiaohongshu.com/new', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await humanDelay(page, 3000);
 
   // 1. 点击发布图文按钮（新版创作者平台）
-  const publishBtn = await page.$('text=发布图文') || await page.$('text=图文') || await page.$('text=上传图文');
+  await dismissModals(page);
+  const publishBtn = await page.$('text=发布图文') || await page.$('text=发布笔记') || await page.$('text=图文') || await page.$('text=上传图文');
   if (!publishBtn) throw new Error('未找到小红书「发布图文」入口，页面可能已改版');
-  await publishBtn.click();
+  await robustClick(page, publishBtn);
   await humanDelay(page, 2000);
 
   // 2. 上传封面（如提供图片路径）
@@ -82,7 +118,8 @@ async function publishXiaohongshu(page, task) {
     return { platform: 'xiaohongshu', status: 'dry_run', title: task.title };
   }
 
-  await publishAction.click();
+  await dismissModals(page);
+  await robustClick(page, publishAction);
   await humanDelay(page, 5000);
 
   // 7. 校验成功
@@ -105,7 +142,7 @@ async function publishZhihu(page, task) {
 
   // 关键：知乎点「写文章」会在新标签页打开 zhuanlan.zhihu.com/write
   const popupPromise = page.waitForEvent('popup', { timeout: 12000 }).catch(() => null);
-  await writeBtn.click();
+  await robustClick(page, writeBtn);
   const popup = await popupPromise;
   if (popup) log('[zhihu] 检测到新标签页编辑器');
 
@@ -135,7 +172,7 @@ async function publishZhihu(page, task) {
           await topicInput.fill(tag.replace(/^#/, ''));
           await humanDelay(wp, 1500);
           const firstTopic = await wp.$('.TopicItem');
-          if (firstTopic) await firstTopic.click();
+          if (firstTopic) await robustClick(wp, firstTopic);
           await humanDelay(wp, 1000);
         } catch (e) {
           log('[zhihu] 话题标签失败，跳过:', e.message);
@@ -147,8 +184,19 @@ async function publishZhihu(page, task) {
     }
   }
 
-  // 发布
-  const publishBtn = await wp.$('text=发布文章') || await wp.$('button:has-text("发布")') || await wp.$('text=发布');
+  // 发布：知乎编辑器里有多个含「发布」的元素，必须定位右下角提交按钮，避免点到「发布设置」
+  let publishBtn = await wp.$('button[class*="PublishButton"]');
+  if (!publishBtn) {
+    const candidates = await wp.$$('button');
+    const matches = [];
+    for (const btn of candidates) {
+      const text = await btn.evaluate(e => e.innerText || '').catch(() => '');
+      const visible = await btn.isVisible().catch(() => false);
+      // 精确文本「发布」且不是设置相关
+      if (visible && text.trim() === '发布') matches.push(btn);
+    }
+    if (matches.length > 0) publishBtn = matches[matches.length - 1]; // 通常是最下面/最右侧的提交按钮
+  }
   if (!publishBtn) throw new Error('未找到知乎发布按钮');
 
   if (task.dryRun) {
@@ -159,13 +207,25 @@ async function publishZhihu(page, task) {
     return { platform: 'zhihu', status: 'dry_run', title: task.title };
   }
 
-  await publishBtn.click();
-  await humanDelay(wp, 5000);
+  // 抗遮挡：先关活动弹层，再点发布（可见点击失败则 DOM 直点兜底）
+  await dismissModals(wp);
+  const beforeUrl = wp.url();
+  await robustClick(wp, publishBtn);
+  await humanDelay(wp, 6000);
 
-  const success = await wp.$('text=发布成功') || await wp.$('text=审核中');
+  // 成功判定：文本提示 或 URL 从 /write 跳转到 /p/xxxxx
+  const afterUrl = wp.url();
+  const bodyText = await wp.evaluate(() => document.body ? document.body.innerText : '').catch(() => '');
+  const textSuccess = /发布成功|审核中/.test(bodyText);
+  const urlSuccess = /zhuanlan\.zhihu\.com\/p\/\d+/.test(afterUrl) && !afterUrl.includes('/edit');
+  const ok = textSuccess || urlSuccess;
+  if (!ok) {
+    log('[zhihu] 发布按钮点击后未检测到成功标志，URL:', afterUrl, 'body前200:', bodyText.slice(0, 200));
+  }
   return {
     platform: 'zhihu',
-    status: success ? 'published' : 'unknown',
+    status: ok ? 'published' : 'unknown',
+    url: afterUrl,
     title: task.title
   };
 }
