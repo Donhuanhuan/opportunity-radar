@@ -1,0 +1,32 @@
+name: 失败自动补跑
+
+on:
+  # 每天北京时间 10:20 / 12:00 各检查一次（UTC 02:20 / 04:00）
+  schedule:
+    - cron: '20 2 * * *'
+    - cron: '0 4 * * *'
+  # 也允许手动触发一次立即检查
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  retry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: ⏬ 检出代码
+        uses: actions/checkout@v4
+
+      - name: 🐍 配置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 🔁 检查今日主任务并补跑
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python scripts/retry_daily.py
